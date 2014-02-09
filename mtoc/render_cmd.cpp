@@ -4,6 +4,7 @@
 #include "camera.h"
 #include "mesh.h"
 #include "object.h"
+#include "../cycles/render/filter.h"
 
 #include <maya/MRenderView.h>
 #include <maya/M3dView.h>
@@ -16,6 +17,10 @@
 #include <maya/MFnMesh.h>
 #include <maya/MIntArray.h>
 #include <maya/MPointArray.h>
+#include <maya/MItDependencyNodes.h>
+#include <maya/MFnDependencyNode.h>
+
+#include "render_globals_node.hpp"
 
 #include "render_cmd.hpp"
 
@@ -28,7 +33,7 @@ static inline ccl::Transform convert_MMatrix_to_Transform(const MMatrix& transfo
 	result.z.x = transform[0][2]; result.z.y = transform[1][2]; result.z.z = transform[2][2]; result.z.w = transform[3][2];
 	result.w.x = transform[0][3]; result.w.y = transform[1][3]; result.w.z = transform[2][3]; result.w.w = transform[3][3];
 
-	return result * ccl::transform_scale(1.0f, 1.0f, -1.0f);
+	return result;
 }
 
 MString RenderCmd::name("cycles_render");
@@ -65,6 +70,7 @@ MStatus RenderCmd::doIt(const MArgList& args)
 
 	if (!MRenderView::doesRenderEditorExist())
 	{
+		displayError("Render View is not opened at current moment");
 		return MStatus::kFailure;
 	}
 	
@@ -96,19 +102,42 @@ MStatus RenderCmd::doIt(const MArgList& args)
 
 	MRenderView::setCurrentCamera(camDagPath);
 
+	MFnDependencyNode render_globals_node;
+
+	for (MItDependencyNodes it_dg; !it_dg.isDone(); it_dg.next())
+	{
+		MFnDependencyNode dep_node(it_dg.thisNode());
+
+		if (RenderGlobalsNode::name == dep_node.typeName())
+		{
+			render_globals_node.setObject(it_dg.thisNode());
+			break;
+		}
+	}
+
+	if (render_globals_node.object().isNull())
+	{
+		displayError("Scene doesn't have any cyclesRenderGlobals node");
+		return MStatus::kFailure;
+	}
+
 	ccl::SessionParams session_params;
 	ccl::SceneParams scene_params;
 
+	session_params.device_type = (ccl::DeviceType)render_globals_node.findPlug(RenderGlobalsNode::computeDeviceAttr).asShort();
 	session_params.background = true;
 
 	m_session = new ccl::Session(session_params);
 	m_scene = new ccl::Scene(scene_params);
 
-	int samples = 1;
+	int samples = render_globals_node.findPlug(RenderGlobalsNode::numRenderSamplesAttr).asInt();
 
 	m_session->scene = m_scene;
 	//m_session->progress.set_update_callback(function_bind(&RenderCmd::update_framebuffer, this));
 	m_session->reset(m_width, m_height, samples);
+
+	m_scene->filter->filter_type = (ccl::FilterType)render_globals_node.findPlug(RenderGlobalsNode::filterTypeAttr).asShort();
+	m_scene->filter->filter_width = render_globals_node.findPlug(RenderGlobalsNode::filterWidthAttr).asFloat();
 
 	sync_camera(camDagPath);
 	sync_meshes();
@@ -185,7 +214,7 @@ void RenderCmd::sync_camera(const MDagPath& camera_path)
 
 	MMatrix transform = camera_shape_path.inclusiveMatrix().transpose();
 
-	m_scene->camera->matrix = convert_MMatrix_to_Transform(camera_shape_path.inclusiveMatrix());	
+	m_scene->camera->matrix = convert_MMatrix_to_Transform(camera_shape_path.inclusiveMatrix()) * ccl::transform_scale(1.0f, 1.0f, -1.0f);
 
 	m_scene->camera->tag_update();
 }

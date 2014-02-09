@@ -2,7 +2,8 @@ include_directories( ${MAYA_INCLUDE_DIR})
 include_directories( ../cycles/render ../cycles/device ../cycles/kernel ../cycles/kernel/svm ../cycles/util)
 
 set(sources plugin.cpp
-						render_cmd.cpp render_cmd.hpp)
+						render_cmd.cpp render_cmd.hpp
+						render_globals_node.cpp render_globals_node.hpp)
 
 add_library(mtoc_plugin SHARED ${sources})
 
