@@ -10,6 +10,8 @@
 #ifndef __UTIL_OPENCL_H__
 #define __UTIL_OPENCL_H__
 
+CCL_NAMESPACE_BEGIN
+
 //! This file contains a copy of the contents of CL.H and CL_PLATFORM.H from the 
 //! official OpenCL spec. The purpose of this code is to load the OpenCL dynamic
 //! library at run-time and thus allow the executable to function on many
@@ -34,36 +36,27 @@
 #endif  //  CLCC_GENERATE_DOCUMENTATION
 
 /*******************************************************************************
-* Copyright (c) 2008-2009 The Khronos Group Inc.
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and/or associated documentation files (the
-* "Materials"), to deal in the Materials without restriction, including
-* without limitation the rights to use, copy, modify, merge, publish,
-* distribute, sublicense, and/or sell copies of the Materials, and to
-* permit persons to whom the Materials are furnished to do so, subject to
-* the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Materials.
-*
-* THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-* MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
-******************************************************************************/
-
-#ifdef __APPLE__
-/* Contains #defines for AVAILABLE_MAC_OS_X_VERSION_10_6_AND_LATER below */
-#include <AvailabilityMacros.h>
-#endif
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+ * Copyright (c) 2008-2009 The Khronos Group Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and/or associated documentation files (the
+ * "Materials"), to deal in the Materials without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Materials, and to
+ * permit persons to whom the Materials are furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Materials.
+ *
+ * THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
+ ******************************************************************************/
 
 #ifndef CLCC_GENERATE_DOCUMENTATION
 
@@ -95,20 +88,20 @@ typedef double                  cl_double;
 
 
 /*
-* Vector types 
-*
-*  Note:   OpenCL requires that all types be naturally aligned. 
-*          This means that vector types must be naturally aligned.
-*          For example, a vector of four floats must be aligned to
-*          a 16 byte boundary (calculated as 4 * the natural 4-byte 
-*          alignment of the float).  The alignment qualifiers here
-*          will only function properly if your compiler supports them
-*          and if you don't actively work to defeat them.  For example,
-*          in order for a cl_float4 to be 16 byte aligned in a struct,
-*          the start of the struct must itself be 16-byte aligned. 
-*
-*          Maintaining proper alignment is the user's responsibility.
-*/
+ * Vector types
+ *
+ *  Note:   OpenCL requires that all types be naturally aligned.
+ *          This means that vector types must be naturally aligned.
+ *          For example, a vector of four floats must be aligned to
+ *          a 16 byte boundary (calculated as 4 * the natural 4-byte
+ *          alignment of the float).  The alignment qualifiers here
+ *          will only function properly if your compiler supports them
+ *          and if you don't actively work to defeat them.  For example,
+ *          in order for a cl_float4 to be 16 byte aligned in a struct,
+ *          the start of the struct must itself be 16-byte aligned.
+ *
+ *          Maintaining proper alignment is the user's responsibility.
+ */
 typedef signed   __int8          cl_char2[2];
 typedef signed   __int8          cl_char4[4];
 typedef signed   __int8          cl_char8[8];
@@ -175,20 +168,20 @@ typedef float           cl_float    __attribute__((aligned(4)));
 typedef double          cl_double   __attribute__((aligned(8)));
 
 /*
-* Vector types 
-*
-*  Note:   OpenCL requires that all types be naturally aligned. 
-*          This means that vector types must be naturally aligned.
-*          For example, a vector of four floats must be aligned to
-*          a 16 byte boundary (calculated as 4 * the natural 4-byte 
-*          alignment of the float).  The alignment qualifiers here
-*          will only function properly if your compiler supports them
-*          and if you don't actively work to defeat them.  For example,
-*          in order for a cl_float4 to be 16 byte aligned in a struct,
-*          the start of the struct must itself be 16-byte aligned. 
-*
-*          Maintaining proper alignment is the user's responsibility.
-*/
+ * Vector types
+ *
+ *  Note:   OpenCL requires that all types be naturally aligned.
+ *          This means that vector types must be naturally aligned.
+ *          For example, a vector of four floats must be aligned to
+ *          a 16 byte boundary (calculated as 4 * the natural 4-byte
+ *          alignment of the float).  The alignment qualifiers here
+ *          will only function properly if your compiler supports them
+ *          and if you don't actively work to defeat them.  For example,
+ *          in order for a cl_float4 to be 16 byte aligned in a struct,
+ *          the start of the struct must itself be 16-byte aligned.
+ *
+ *          Maintaining proper alignment is the user's responsibility.
+ */
 typedef int8_t          cl_char2[2]     __attribute__((aligned(2)));
 typedef int8_t          cl_char4[4]     __attribute__((aligned(4)));
 typedef int8_t          cl_char8[8]     __attribute__((aligned(8)));
@@ -346,8 +339,8 @@ typedef cl_uint             cl_command_type;
 typedef cl_uint             cl_profiling_info;
 
 typedef struct _cl_image_format {
-    cl_channel_order        image_channel_order;
-    cl_channel_type         image_channel_data_type;
+	cl_channel_order        image_channel_order;
+	cl_channel_type         image_channel_data_type;
 } cl_image_format;
 
 
@@ -1312,9 +1305,7 @@ CLEW_FUN_EXPORT     PFNCLGETEXTENSIONFUNCTIONADDRESS    __clewGetExtensionFuncti
 int clLibraryInit(void);
 const char *clErrorString(cl_int error);
 
-#ifdef __cplusplus
-}
-#endif
+CCL_NAMESPACE_END
 
 #endif /*  __UTIL_OPENCL_H__ */
 

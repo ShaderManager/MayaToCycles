@@ -4,7 +4,8 @@
 #include "camera.h"
 #include "mesh.h"
 #include "object.h"
-#include "../cycles/render/filter.h"
+#include "integrator.h"
+#include "background.h"
 
 #include <maya/MRenderView.h>
 #include <maya/M3dView.h>
@@ -19,6 +20,7 @@
 #include <maya/MPointArray.h>
 #include <maya/MItDependencyNodes.h>
 #include <maya/MFnDependencyNode.h>
+#include <maya/MComputation.h>
 
 #include "render_globals_node.hpp"
 
@@ -124,59 +126,113 @@ MStatus RenderCmd::doIt(const MArgList& args)
 	ccl::SessionParams session_params;
 	ccl::SceneParams scene_params;
 
-	session_params.device_type = (ccl::DeviceType)render_globals_node.findPlug(RenderGlobalsNode::computeDeviceAttr).asShort();
+	ccl::DeviceType target_type = (ccl::DeviceType)render_globals_node.findPlug(RenderGlobalsNode::computeDeviceAttr).asShort();
+
+	for (auto& device_info : ccl::Device::available_devices())
+	{
+		if (device_info.type == target_type)
+		{
+			session_params.device = device_info;
+			break;
+		}
+	}
+
 	session_params.background = true;
 
 	m_session = new ccl::Session(session_params);
-	m_scene = new ccl::Scene(scene_params);
+	m_scene = new ccl::Scene(scene_params, session_params.device);
 
 	int samples = render_globals_node.findPlug(RenderGlobalsNode::numRenderSamplesAttr).asInt();
 
 	m_session->scene = m_scene;
-	//m_session->progress.set_update_callback(function_bind(&RenderCmd::update_framebuffer, this));
-	m_session->reset(m_width, m_height, samples);
+	m_scene->background->shader = m_scene->default_background;
 
-	m_scene->filter->filter_type = (ccl::FilterType)render_globals_node.findPlug(RenderGlobalsNode::filterTypeAttr).asShort();
-	m_scene->filter->filter_width = render_globals_node.findPlug(RenderGlobalsNode::filterWidthAttr).asFloat();
+	ccl::BufferParams framebuffer_params;
+	framebuffer_params.width = m_width;
+	framebuffer_params.height = m_height;
+	framebuffer_params.full_x = 0;
+	framebuffer_params.full_y = 0;
+	framebuffer_params.full_width = m_width;
+	framebuffer_params.full_height = m_height;
+
+	m_session->reset(framebuffer_params, samples);
+
+	// Integrator
+	m_scene->integrator->seed = render_globals_node.findPlug(RenderGlobalsNode::seedAttr).asInt();
+	m_scene->integrator->min_bounce = render_globals_node.findPlug(RenderGlobalsNode::minBounceAttr).asInt();
+	m_scene->integrator->max_bounce = render_globals_node.findPlug(RenderGlobalsNode::maxBounceAttr).asInt();
+	m_scene->integrator->max_diffuse_bounce = render_globals_node.findPlug(RenderGlobalsNode::maxDiffuseBounceAttr).asInt();
+	m_scene->integrator->max_glossy_bounce = render_globals_node.findPlug(RenderGlobalsNode::maxGlossyBounceAttr).asInt();
+	m_scene->integrator->max_transmission_bounce = render_globals_node.findPlug(RenderGlobalsNode::maxTransmissionBounceAttr).asInt();
+	m_scene->integrator->probalistic_termination = render_globals_node.findPlug(RenderGlobalsNode::probalisticTerminationAttr).asBool();
+	m_scene->integrator->transparent_min_bounce = render_globals_node.findPlug(RenderGlobalsNode::transparentMinBounceAttr).asInt();
+	m_scene->integrator->transparent_max_bounce = render_globals_node.findPlug(RenderGlobalsNode::transparentMaxBounceAttr).asInt();
+	m_scene->integrator->transparent_probalistic = render_globals_node.findPlug(RenderGlobalsNode::transparentProbalisticAttr).asBool();
+	m_scene->integrator->transparent_shadows = render_globals_node.findPlug(RenderGlobalsNode::transparentShadowsAttr).asBool();
+	m_scene->integrator->no_caustics = !render_globals_node.findPlug(RenderGlobalsNode::causticsAttr).asBool();
+
+	MComputation computation;
+	computation.beginComputation();
 
 	sync_camera(camDagPath);
 	sync_meshes();
 
-	MRenderView::startRender(m_width, m_height, true);
+	m_session->write_render_tile_cb = function_bind(&RenderCmd::update_tile, this, _1);
 
-	m_session->start();
+	MRenderView::startRender(m_width, m_height, false);
+
+	m_session->start();	
+
+	/*while (!m_session->progress.is_finished())
+	{
+		if (computation.isInterruptRequested())
+		{
+			m_session->progress.set_cancel("User canceled render");
+			break;
+		}
+
+		if (m_scene->mutex.try_lock())
+		{
+			update_framebuffer();
+			m_scene->mutex.unlock();
+		}
+	}*/
+
 	m_session->wait();
 
-	update_framebuffer();
+	//update_framebuffer();
 
 	MRenderView::endRender();
+
+	computation.endComputation();
 
 	delete m_session;
 
 	return MStatus::kSuccess;
 }
 
-void RenderCmd::update_framebuffer()
+void RenderCmd::update_tile(ccl::RenderTile& tile)
 {
-	int sample;
-	double total_time, sample_time;
-	m_session->progress.get_sample(sample, total_time, sample_time);
+	int sample = tile.sample;
 
-	ccl::float4* data = m_session->buffers->copy_from_device(1.0f, sample);
+	if (tile.buffers->copy_from_device())
+	{
+		RV_PIXEL* framebuffer = new RV_PIXEL[tile.w * tile.h];
 
-	if (!data)
-		return;
+		if (tile.buffers->get_pass_rect(ccl::PASS_COMBINED, 1.0f, sample, 4, (float*)framebuffer))
+		{
+			unsigned int left, right, bottom, top;
+			left = tile.x;
+			right = tile.x + tile.w - 1;
+			bottom = tile.y;
+			top = tile.y + tile.h - 1;
 
-	unsigned int left, right, bottom, top;
-	//MRenderView::getRenderRegion(left, right, bottom, top);
-	left = bottom = 0;
-	right = m_width - 1;
-	top = m_height - 1;
+			MStatus status = MRenderView::updatePixels(left, right, bottom, top, framebuffer, true);
+			MRenderView::refresh(left, right, bottom, top);
+		}
 
-	MStatus status = MRenderView::updatePixels(left, right, bottom, top, (RV_PIXEL*)data, true);
-	status = MRenderView::refresh(left, right, bottom, top);
-
-	delete [] data;
+		delete[] framebuffer;
+	}
 }
 
 void RenderCmd::sync_camera(const MDagPath& camera_path)
@@ -193,23 +249,23 @@ void RenderCmd::sync_camera(const MDagPath& camera_path)
 
 	if (aspect > 1.f)
 	{
-		m_scene->camera->left = (2.f * shiftX) - 1;
-		m_scene->camera->right = (2.f * shiftX) + 1;
-		m_scene->camera->bottom = (2.f * shiftY) - invAspect;
-		m_scene->camera->top = (2.f * shiftY) + invAspect;
+		m_scene->camera->viewplane.left = (2.f * shiftX) - 1;
+		m_scene->camera->viewplane.right = (2.f * shiftX) + 1;
+		m_scene->camera->viewplane.bottom = (2.f * shiftY) - invAspect;
+		m_scene->camera->viewplane.top = (2.f * shiftY) + invAspect;
 	}
 	else
 	{
-		m_scene->camera->left = (2.f * shiftX) - aspect;
-		m_scene->camera->right = (2.f * shiftX) + aspect;
-		m_scene->camera->bottom = (2.f * shiftY) - 1;
-		m_scene->camera->top = (2.f * shiftY) + 1;
+		m_scene->camera->viewplane.left = (2.f * shiftX) - aspect;
+		m_scene->camera->viewplane.right = (2.f * shiftX) + aspect;
+		m_scene->camera->viewplane.bottom = (2.f * shiftY) - 1;
+		m_scene->camera->viewplane.top = (2.f * shiftY) + 1;
 	}
 
 	m_scene->camera->nearclip = camera.nearClippingPlane();
 	m_scene->camera->farclip = camera.farClippingPlane();
 
-	m_scene->camera->ortho = false;
+	m_scene->camera->type = ccl::CAMERA_PERSPECTIVE;
 	m_scene->camera->fov = (m_width > m_height) ? camera.horizontalFieldOfView() : camera.verticalFieldOfView();
 
 	MMatrix transform = camera_shape_path.inclusiveMatrix().transpose();
@@ -242,7 +298,7 @@ void RenderCmd::sync_meshes()
 				num_faces += triangle_count[i];
 			}
 
-			cycles_mesh->reserve(vertices.length(), num_faces);
+			cycles_mesh->reserve(vertices.length(), num_faces, 0, 0);
 
 			for (unsigned int i = 0; i < vertices.length(); i++)
 			{
@@ -257,7 +313,7 @@ void RenderCmd::sync_meshes()
 					cycles_mesh->triangles[face].v[0] = triangle_ids[face * 3 + 0];
 					cycles_mesh->triangles[face].v[1] = triangle_ids[face * 3 + 1];
 					cycles_mesh->triangles[face].v[2] = triangle_ids[face * 3 + 2];
-					cycles_mesh->shader[face] = 0;
+					cycles_mesh->shader[face] = m_scene->default_surface;
 					cycles_mesh->smooth[face] = true;
 				}
 			}
@@ -273,7 +329,6 @@ void RenderCmd::sync_meshes()
 			node->mesh = cycles_mesh;
 			node->name = it_dag.fullPathName().asChar();
 			node->tfm = convert_MMatrix_to_Transform(transform_path.inclusiveMatrix());
-			node->compute_bounds();
 			node->tag_update(m_scene);
 
 			m_scene->objects.push_back(node);

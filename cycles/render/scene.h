@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #ifndef __SCENE_H__
@@ -33,18 +31,23 @@
 
 CCL_NAMESPACE_BEGIN
 
+class AttributeRequestSet;
 class Background;
 class Camera;
 class Device;
+class DeviceInfo;
 class Film;
-class Filter;
 class Integrator;
 class Light;
 class LightManager;
+class LookupTables;
 class Mesh;
 class MeshManager;
 class Object;
 class ObjectManager;
+class ParticleSystemManager;
+class ParticleSystem;
+class CurveSystemManager;
 class Shader;
 class ShaderManager;
 class Progress;
@@ -57,6 +60,7 @@ public:
 	device_vector<float4> bvh_nodes;
 	device_vector<uint> object_node;
 	device_vector<float4> tri_woop;
+	device_vector<uint> prim_segment;
 	device_vector<uint> prim_visibility;
 	device_vector<uint> prim_index;
 	device_vector<uint> prim_object;
@@ -67,8 +71,12 @@ public:
 	device_vector<float4> tri_vindex;
 	device_vector<float4> tri_verts;
 
+	device_vector<float4> curves;
+	device_vector<float4> curve_keys;
+
 	/* objects */
 	device_vector<float4> objects;
+	device_vector<float4> objects_vector;
 
 	/* attributes */
 	device_vector<uint4> attributes_map;
@@ -78,19 +86,30 @@ public:
 	/* lights */
 	device_vector<float4> light_distribution;
 	device_vector<float4> light_data;
+	device_vector<float2> light_background_marginal_cdf;
+	device_vector<float2> light_background_conditional_cdf;
+
+	/* particles */
+	device_vector<float4> particles;
 
 	/* shaders */
 	device_vector<uint4> svm_nodes;
 	device_vector<uint> shader_flag;
+	device_vector<uint> object_flag;
 
-	/* filter */
-	device_vector<float> filter_table;
+	/* lookup tables */
+	device_vector<float> lookup_table;
 
 	/* integrator */
 	device_vector<uint> sobol_directions;
 
 	/* images */
-	device_vector<uchar4> tex_image[TEX_IMAGE_MAX];
+	device_vector<uchar4> tex_image[TEX_EXTENDED_NUM_IMAGES];
+	device_vector<float4> tex_float_image[TEX_EXTENDED_NUM_FLOAT_IMAGES];
+
+	/* opencl images */
+	device_vector<uchar4> tex_image_packed;
+	device_vector<uint4> tex_image_packed_info;
 
 	KernelData data;
 };
@@ -104,6 +123,7 @@ public:
 	bool use_bvh_cache;
 	bool use_bvh_spatial_split;
 	bool use_qbvh;
+	bool persistent_data;
 
 	SceneParams()
 	{
@@ -116,6 +136,7 @@ public:
 #else
 		use_qbvh = false;
 #endif
+		persistent_data = false;
 	}
 
 	bool modified(const SceneParams& params)
@@ -123,7 +144,8 @@ public:
 		&& bvh_type == params.bvh_type
 		&& use_bvh_cache == params.use_bvh_cache
 		&& use_bvh_spatial_split == params.use_bvh_spatial_split
-		&& use_qbvh == params.use_qbvh); }
+		&& use_qbvh == params.use_qbvh
+		&& persistent_data == params.persistent_data); }
 };
 
 /* Scene */
@@ -132,7 +154,7 @@ class Scene {
 public:
 	/* data */
 	Camera *camera;
-	Filter *filter;
+	LookupTables *lookup_tables;
 	Film *film;
 	Background *background;
 	Integrator *integrator;
@@ -142,6 +164,7 @@ public:
 	vector<Mesh*> meshes;
 	vector<Shader*> shaders;
 	vector<Light*> lights;
+	vector<ParticleSystem*> particle_systems;
 
 	/* data managers */
 	ImageManager *image_manager;
@@ -149,11 +172,14 @@ public:
 	ShaderManager *shader_manager;
 	MeshManager *mesh_manager;
 	ObjectManager *object_manager;
+	ParticleSystemManager *particle_system_manager;
+	CurveSystemManager *curve_system_manager;
 
 	/* default shaders */
 	int default_surface;
 	int default_light;
 	int default_background;
+	int default_empty;
 
 	/* device */
 	Device *device;
@@ -165,13 +191,25 @@ public:
 	/* mutex must be locked manually by callers */
 	thread_mutex mutex;
 
-	Scene(const SceneParams& params);
+	Scene(const SceneParams& params, const DeviceInfo& device_info);
 	~Scene();
 
 	void device_update(Device *device, Progress& progress);
 
+	bool need_global_attribute(AttributeStandard std);
+	void need_global_attributes(AttributeRequestSet& attributes);
+
+	enum MotionType { MOTION_NONE = 0, MOTION_PASS, MOTION_BLUR };
+	MotionType need_motion(bool advanced_shading = true);
+
 	bool need_update();
 	bool need_reset();
+
+	void reset();
+	void device_free();
+
+protected:
+	void free_memory(bool final);
 };
 
 CCL_NAMESPACE_END

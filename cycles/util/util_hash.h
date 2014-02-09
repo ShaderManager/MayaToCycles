@@ -1,52 +1,62 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #ifndef __UTIL_HASH_H__
 #define __UTIL_HASH_H__
 
+#include "util_types.h"
+
 CCL_NAMESPACE_BEGIN
 
-static inline unsigned int hash_int_2d(unsigned int kx, unsigned int ky)
+static inline uint hash_int_2d(uint kx, uint ky)
 {
 	#define rot(x,k) (((x)<<(k)) | ((x)>>(32-(k))))
 
-	unsigned int a, b, c;
+	uint a, b, c;
 
 	a = b = c = 0xdeadbeef + (2 << 2) + 13;
 	a += kx;
 	b += ky;
 
 	c ^= b; c -= rot(b,14);
-    a ^= c; a -= rot(c,11);
-    b ^= a; b -= rot(a,25);
-    c ^= b; c -= rot(b,16);
-    a ^= c; a -= rot(c,4);
-    b ^= a; b -= rot(a,14);
-    c ^= b; c -= rot(b,24);
+	a ^= c; a -= rot(c,11);
+	b ^= a; b -= rot(a,25);
+	c ^= b; c -= rot(b,16);
+	a ^= c; a -= rot(c,4);
+	b ^= a; b -= rot(a,14);
+	c ^= b; c -= rot(b,24);
 
-    return c;
+	return c;
 
 	#undef rot
 }
 
-static inline unsigned int hash_int(unsigned int k)
+static inline uint hash_int(uint k)
 {
 	return hash_int_2d(k, 0);
+}
+
+static inline uint hash_string(const char *str)
+{
+	uint i = 0, c;
+
+	while ((c = *str++))
+		i = i * 37 + c;
+
+	return i;
 }
 
 CCL_NAMESPACE_END

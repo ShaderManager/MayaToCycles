@@ -1,32 +1,34 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #ifndef __SESSION_H__
 #define __SESSION_H__
 
+#include "buffers.h"
 #include "device.h"
 #include "tile.h"
 
 #include "util_progress.h"
+#include "util_stats.h"
 #include "util_thread.h"
+#include "util_vector.h"
 
 CCL_NAMESPACE_BEGIN
 
+class BufferParams;
 class Device;
 class DeviceScene;
 class DisplayBuffer;
@@ -38,49 +40,68 @@ class Scene;
 
 class SessionParams {
 public:
-	DeviceType device_type;
+	DeviceInfo device;
 	bool background;
+	bool progressive_refine;
 	string output_path;
 
 	bool progressive;
+	bool experimental;
 	int samples;
-	int tile_size;
-	int min_size;
+	int2 tile_size;
+	TileOrder tile_order;
+	int start_resolution;
 	int threads;
+
+	bool display_buffer_linear;
 
 	double cancel_timeout;
 	double reset_timeout;
 	double text_timeout;
 
+	enum { OSL, SVM } shadingsystem;
+
 	SessionParams()
 	{
-		device_type = DEVICE_CPU;
 		background = false;
+		progressive_refine = false;
 		output_path = "";
 
 		progressive = false;
-		samples = INT_MAX;
-		tile_size = 64;
-		min_size = 64;
+		experimental = false;
+		samples = USHRT_MAX;
+		tile_size = make_int2(64, 64);
+		start_resolution = INT_MAX;
 		threads = 0;
+
+		display_buffer_linear = false;
 
 		cancel_timeout = 0.1;
 		reset_timeout = 0.1;
 		text_timeout = 1.0;
+
+		shadingsystem = SVM;
+		tile_order = TILE_CENTER;
 	}
 
 	bool modified(const SessionParams& params)
-	{ return !(device_type == params.device_type
+	{ return !(device.type == params.device.type
+		&& device.id == params.device.id
 		&& background == params.background
+		&& progressive_refine == params.progressive_refine
 		&& output_path == params.output_path
 		/* && samples == params.samples */
 		&& progressive == params.progressive
+		&& experimental == params.experimental
 		&& tile_size == params.tile_size
-		&& min_size == params.min_size
+		&& start_resolution == params.start_resolution
 		&& threads == params.threads
+		&& display_buffer_linear == params.display_buffer_linear
 		&& cancel_timeout == params.cancel_timeout
 		&& reset_timeout == params.reset_timeout
-		&& text_timeout == params.text_timeout); }
+		&& text_timeout == params.text_timeout
+		&& tile_order == params.tile_order
+		&& shadingsystem == params.shadingsystem); }
 
 };
 
@@ -97,25 +118,30 @@ public:
 	DisplayBuffer *display;
 	Progress progress;
 	SessionParams params;
-	int sample;
+	TileManager tile_manager;
+	Stats stats;
+
+	boost::function<void(RenderTile&)> write_render_tile_cb;
+	boost::function<void(RenderTile&)> update_render_tile_cb;
 
 	Session(const SessionParams& params);
 	~Session();
 
 	void start();
-	bool draw(int w, int h);
+	bool draw(BufferParams& params);
 	void wait();
 
 	bool ready_to_reset();
-	void reset(int w, int h, int samples);
+	void reset(BufferParams& params, int samples);
 	void set_samples(int samples);
 	void set_pause(bool pause);
 
+	void device_free();
 protected:
 	struct DelayedReset {
 		thread_mutex mutex;
 		bool do_reset;
-		int w, h;
+		BufferParams params;
 		int samples;
 	} delayed_reset;
 
@@ -125,18 +151,23 @@ protected:
 	void update_status_time(bool show_pause = false, bool show_done = false);
 
 	void tonemap();
-	void path_trace(Tile& tile);
-	void reset_(int w, int h, int samples);
+	void path_trace();
+	void reset_(BufferParams& params, int samples);
 
 	void run_cpu();
-	bool draw_cpu(int w, int h);
-	void reset_cpu(int w, int h, int samples);
+	bool draw_cpu(BufferParams& params);
+	void reset_cpu(BufferParams& params, int samples);
 
 	void run_gpu();
-	bool draw_gpu(int w, int h);
-	void reset_gpu(int w, int h, int samples);
+	bool draw_gpu(BufferParams& params);
+	void reset_gpu(BufferParams& params, int samples);
 
-	TileManager tile_manager;
+	bool acquire_tile(Device *tile_device, RenderTile& tile);
+	void update_tile_sample(RenderTile& tile);
+	void release_tile(RenderTile& tile);
+
+	void update_progress_sample();
+
 	bool device_use_gl;
 
 	thread *session_thread;
@@ -150,11 +181,22 @@ protected:
 	bool pause;
 	thread_condition_variable pause_cond;
 	thread_mutex pause_mutex;
+	thread_mutex tile_mutex;
+	thread_mutex buffers_mutex;
+	thread_mutex display_mutex;
+
+	bool kernels_loaded;
 
 	double start_time;
 	double reset_time;
 	double preview_time;
 	double paused_time;
+
+	/* progressive refine */
+	double last_update_time;
+	bool update_progressive_refine(bool cancel);
+
+	vector<RenderBuffers *> tile_buffers;
 };
 
 CCL_NAMESPACE_END

@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #ifndef __DEVICE_H__
@@ -22,7 +20,10 @@
 #include <stdlib.h>
 
 #include "device_memory.h"
+#include "device_task.h"
 
+#include "util_list.h"
+#include "util_stats.h"
 #include "util_string.h"
 #include "util_thread.h"
 #include "util_types.h"
@@ -31,6 +32,9 @@
 CCL_NAMESPACE_BEGIN
 
 class Progress;
+class RenderTile;
+
+/* Device Types */
 
 enum DeviceType {
 	DEVICE_NONE,
@@ -41,55 +45,53 @@ enum DeviceType {
 	DEVICE_MULTI
 };
 
-enum MemoryType {
-	MEM_READ_ONLY,
-	MEM_WRITE_ONLY,
-	MEM_READ_WRITE
-};
-
-/* Device Task */
-
-class DeviceTask {
+class DeviceInfo {
 public:
-	typedef enum { PATH_TRACE, TONEMAP, DISPLACE } Type;
-	Type type;
+	DeviceType type;
+	string description;
+	string id;
+	int num;
+	bool display_device;
+	bool advanced_shading;
+	bool pack_images;
+	vector<DeviceInfo> multi_devices;
 
-	int x, y, w, h;
-	device_ptr rng_state;
-	device_ptr rgba;
-	device_ptr buffer;
-	int sample;
-	int resolution;
-
-	device_ptr displace_input;
-	device_ptr displace_offset;
-	int displace_x, displace_w;
-
-	DeviceTask(Type type = PATH_TRACE);
-	void split(ThreadQueue<DeviceTask>& tasks, int num);
+	DeviceInfo()
+	{
+		type = DEVICE_CPU;
+		id = "CPU";
+		num = 0;
+		display_device = false;
+		advanced_shading = true;
+		pack_images = false;
+	}
 };
 
 /* Device */
 
 class Device {
 protected:
-	Device() {}
+	Device(DeviceInfo& info_, Stats &stats_, bool background) : background(background), info(info_), stats(stats_) {}
 
 	bool background;
+	string error_msg;
 
 public:
 	virtual ~Device() {}
 
-	virtual bool support_full_kernel() = 0;
-
 	/* info */
-	virtual string description() = 0;
+	DeviceInfo info;
+	virtual const string& error_message() { return error_msg; }
+	bool have_error() { return !error_message().empty(); }
+
+	/* statistics */
+	Stats &stats;
 
 	/* regular memory */
 	virtual void mem_alloc(device_memory& mem, MemoryType type) = 0;
 	virtual void mem_copy_to(device_memory& mem) = 0;
 	virtual void mem_copy_from(device_memory& mem,
-		size_t offset, size_t size) = 0;
+		int y, int w, int h, int elem) = 0;
 	virtual void mem_zero(device_memory& mem) = 0;
 	virtual void mem_free(device_memory& mem) = 0;
 
@@ -110,7 +112,7 @@ public:
 	virtual void *osl_memory() { return NULL; }
 
 	/* load/compile kernels, must be called before adding tasks */ 
-	virtual bool load_kernels() { return true; }
+	virtual bool load_kernels(bool experimental) { return true; }
 
 	/* tasks */
 	virtual void task_add(DeviceTask& task) = 0;
@@ -119,19 +121,24 @@ public:
 	
 	/* opengl drawing */
 	virtual void draw_pixels(device_memory& mem, int y, int w, int h,
-		int width, int height, bool transparent);
+		int dy, int width, int height, bool transparent);
 
 #ifdef WITH_NETWORK
 	/* networking */
 	void server_run();
 #endif
 
+	/* multi device */
+	virtual void map_tile(Device *sub_device, RenderTile& tile) {}
+	virtual int device_number(Device *sub_device) { return 0; }
+
 	/* static */
-	static Device *create(DeviceType type, bool background = true, int threads = 0);
+	static Device *create(DeviceInfo& info, Stats &stats, bool background = true);
 
 	static DeviceType type_from_string(const char *name);
 	static string string_from_type(DeviceType type);
-	static vector<DeviceType> available_types();
+	static vector<DeviceType>& available_types();
+	static vector<DeviceInfo>& available_devices();
 };
 
 CCL_NAMESPACE_END

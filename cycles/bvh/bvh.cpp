@@ -18,6 +18,7 @@
 #include "mesh.h"
 #include "object.h"
 #include "scene.h"
+#include "curves.h"
 
 #include "bvh.h"
 #include "bvh_build.h"
@@ -29,7 +30,9 @@
 #include "util_foreach.h"
 #include "util_map.h"
 #include "util_progress.h"
+#include "util_system.h"
 #include "util_types.h"
+#include "util_math.h"
 
 CCL_NAMESPACE_BEGIN
 
@@ -70,21 +73,31 @@ BVH *BVH::create(const BVHParams& params, const vector<Object*>& objects)
 
 bool BVH::cache_read(CacheData& key)
 {
+	key.add(system_cpu_bits());
 	key.add(&params, sizeof(params));
 
 	foreach(Object *ob, objects) {
 		key.add(ob->mesh->verts);
 		key.add(ob->mesh->triangles);
+		key.add(ob->mesh->curve_keys);
+		key.add(ob->mesh->curves);
+		key.add(&ob->bounds, sizeof(ob->bounds));
+		key.add(&ob->visibility, sizeof(ob->visibility));
+		key.add(&ob->mesh->transform_applied, sizeof(bool));
 	}
 
 	CacheData value;
 
 	if(Cache::global.lookup(key, value)) {
+		cache_filename = key.get_filename();
+
 		value.read(pack.root_index);
+		value.read(pack.SAH);
 
 		value.read(pack.nodes);
 		value.read(pack.object_node);
 		value.read(pack.tri_woop);
+		value.read(pack.prim_segment);
 		value.read(pack.prim_visibility);
 		value.read(pack.prim_index);
 		value.read(pack.prim_object);
@@ -101,16 +114,38 @@ void BVH::cache_write(CacheData& key)
 	CacheData value;
 
 	value.add(pack.root_index);
+	value.add(pack.SAH);
 
 	value.add(pack.nodes);
 	value.add(pack.object_node);
 	value.add(pack.tri_woop);
+	value.add(pack.prim_segment);
 	value.add(pack.prim_visibility);
 	value.add(pack.prim_index);
 	value.add(pack.prim_object);
 	value.add(pack.is_leaf);
 
 	Cache::global.insert(key, value);
+
+	cache_filename = key.get_filename();
+}
+
+void BVH::clear_cache_except()
+{
+	set<string> except;
+
+	if(!cache_filename.empty())
+		except.insert(cache_filename);
+
+	foreach(Object *ob, objects) {
+		Mesh *mesh = ob->mesh;
+		BVH *bvh = mesh->bvh;
+
+		if(bvh && !bvh->cache_filename.empty())
+			except.insert(bvh->cache_filename);
+	}
+
+	Cache::global.clear_except("bvh", except);
 }
 
 /* Building */
@@ -130,10 +165,11 @@ void BVH::build(Progress& progress)
 	}
 
 	/* build nodes */
+	vector<int> prim_segment;
 	vector<int> prim_index;
 	vector<int> prim_object;
 
-	BVHBuild bvh_build(objects, prim_index, prim_object, params, progress);
+	BVHBuild bvh_build(objects, prim_segment, prim_index, prim_object, params, progress);
 	BVHNode *root = bvh_build.run();
 
 	if(progress.get_cancel()) {
@@ -142,6 +178,7 @@ void BVH::build(Progress& progress)
 	}
 
 	/* todo: get rid of this copy */
+	pack.prim_segment = prim_segment;
 	pack.prim_index = prim_index;
 	pack.prim_object = prim_object;
 
@@ -155,8 +192,8 @@ void BVH::build(Progress& progress)
 	}
 
 	/* pack triangles */
-	progress.set_substatus("Packing BVH triangles");
-	pack_triangles();
+	progress.set_substatus("Packing BVH triangles and strands");
+	pack_primitives();
 
 	if(progress.get_cancel()) {
 		root->deleteSubtree();
@@ -177,6 +214,10 @@ void BVH::build(Progress& progress)
 	if(params.use_cache) {
 		progress.set_substatus("Writing BVH cache");
 		cache_write(key);
+
+		/* clear other bvh files from cache */
+		if(params.top_level)
+			clear_cache_except();
 	}
 }
 
@@ -184,8 +225,8 @@ void BVH::build(Progress& progress)
 
 void BVH::refit(Progress& progress)
 {
-	progress.set_substatus("Packing BVH triangles");
-	pack_triangles();
+	progress.set_substatus("Packing BVH primitives");
+	pack_primitives();
 
 	if(progress.get_cancel()) return;
 
@@ -211,7 +252,7 @@ void BVH::pack_triangle(int idx, float4 woop[3])
 	float3 r1 = v1 - v2;
 	float3 r2 = cross(r0, r1);
 
-	if(dot(r0, r0) == 0.0f || dot(r1, r1) == 0.0f || dot(r2, r2) == 0.0f) {
+	if(is_zero(r0) || is_zero(r1) || is_zero(r2)) {
 		/* degenerate */
 		woop[0] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 		woop[1] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -232,7 +273,44 @@ void BVH::pack_triangle(int idx, float4 woop[3])
 	}
 }
 
-void BVH::pack_triangles()
+/* Curves*/
+
+void BVH::pack_curve_segment(int idx, float4 woop[3])
+{
+	int tob = pack.prim_object[idx];
+	const Mesh *mesh = objects[tob]->mesh;
+	int tidx = pack.prim_index[idx];
+	int segment = pack.prim_segment[idx];
+	int k0 = mesh->curves[tidx].first_key + segment;
+	int k1 = mesh->curves[tidx].first_key + segment + 1;
+	float3 v0 = mesh->curve_keys[k0].co;
+	float3 v1 = mesh->curve_keys[k1].co;
+
+	float3 d0 = v1 - v0;
+	float l =  len(d0);
+	
+	/*Plan
+	*Transform tfm = make_transform(
+	*	location <3>    , l,
+	*	extra curve data <3>    , StrID,
+	*	nextkey, flags/tip?,    0, 0);
+	*/
+	float3 tg0 = make_float3(1.0f, 0.0f, 0.0f);
+	float3 tg1 = make_float3(1.0f, 0.0f, 0.0f);
+	
+	Transform tfm = make_transform(
+		tg0.x, tg0.y, tg0.z, l,
+		tg1.x, tg1.y, tg1.z, 0,
+		0, 0, 0, 0,
+		0, 0, 0, 1);
+
+	woop[0] = tfm.x;
+	woop[1] = tfm.y;
+	woop[2] = tfm.z;
+
+}
+
+void BVH::pack_primitives()
 {
 	int nsize = TRI_NODE_SIZE;
 	size_t tidx_size = pack.prim_index.size();
@@ -246,12 +324,23 @@ void BVH::pack_triangles()
 		if(pack.prim_index[i] != -1) {
 			float4 woop[3];
 
-			pack_triangle(i, woop);
+			if(pack.prim_segment[i] != ~0)
+				pack_curve_segment(i, woop);
+			else
+				pack_triangle(i, woop);
+			
 			memcpy(&pack.tri_woop[i * nsize], woop, sizeof(float4)*3);
 
 			int tob = pack.prim_object[i];
 			Object *ob = objects[tob];
 			pack.prim_visibility[i] = ob->visibility;
+
+			if(pack.prim_segment[i] != ~0)
+				pack.prim_visibility[i] |= PATH_RAY_CURVE;
+		}
+		else {
+			memset(&pack.tri_woop[i * nsize], 0, sizeof(float4)*3);
+			pack.prim_visibility[i] = 0;
 		}
 	}
 }
@@ -261,19 +350,23 @@ void BVH::pack_triangles()
 void BVH::pack_instances(size_t nodes_size)
 {
 	/* The BVH's for instances are built separately, but for traversal all
-	   BVH's are stored in global arrays. This function merges them into the
-	   top level BVH, adjusting indexes and offsets where appropriate. */
+	 * BVH's are stored in global arrays. This function merges them into the
+	 * top level BVH, adjusting indexes and offsets where appropriate. */
 	bool use_qbvh = params.use_qbvh;
 	size_t nsize = (use_qbvh)? BVH_QNODE_SIZE: BVH_NODE_SIZE;
 
 	/* adjust primitive index to point to the triangle in the global array, for
-	   meshes with transform applied and already in the top level BVH */
+	 * meshes with transform applied and already in the top level BVH */
 	for(size_t i = 0; i < pack.prim_index.size(); i++)
-		if(pack.prim_index[i] != -1)
-			pack.prim_index[i] += objects[pack.prim_object[i]]->mesh->tri_offset;
+		if(pack.prim_index[i] != -1) {
+			if(pack.prim_segment[i] != ~0)
+				pack.prim_index[i] += objects[pack.prim_object[i]]->mesh->curve_offset;
+			else
+				pack.prim_index[i] += objects[pack.prim_object[i]]->mesh->tri_offset;
+		}
 
 	/* track offsets of instanced BVH data in global array */
-	size_t tri_offset = pack.prim_index.size();
+	size_t prim_offset = pack.prim_index.size();
 	size_t nodes_offset = nodes_size;
 
 	/* clear array that gives the node indexes for instanced objects */
@@ -308,6 +401,7 @@ void BVH::pack_instances(size_t nodes_size)
 	mesh_map.clear();
 
 	pack.prim_index.resize(prim_index_size);
+	pack.prim_segment.resize(prim_index_size);
 	pack.prim_object.resize(prim_index_size);
 	pack.prim_visibility.resize(prim_index_size);
 	pack.tri_woop.resize(tri_woop_size);
@@ -315,6 +409,7 @@ void BVH::pack_instances(size_t nodes_size)
 	pack.object_node.resize(objects.size());
 
 	int *pack_prim_index = (pack.prim_index.size())? &pack.prim_index[0]: NULL;
+	int *pack_prim_segment = (pack.prim_segment.size())? &pack.prim_segment[0]: NULL;
 	int *pack_prim_object = (pack.prim_object.size())? &pack.prim_object[0]: NULL;
 	uint *pack_prim_visibility = (pack.prim_visibility.size())? &pack.prim_visibility[0]: NULL;
 	float4 *pack_tri_woop = (pack.tri_woop.size())? &pack.tri_woop[0]: NULL;
@@ -325,14 +420,14 @@ void BVH::pack_instances(size_t nodes_size)
 		Mesh *mesh = ob->mesh;
 
 		/* if mesh transform is applied, that means it's already in the top
-		   level BVH, and we don't need to merge it in */
+		 * level BVH, and we don't need to merge it in */
 		if(mesh->transform_applied) {
 			pack.object_node[object_offset++] = 0;
 			continue;
 		}
 
 		/* if mesh already added once, don't add it again, but used set
-		   node offset for this object */
+		 * node offset for this object */
 		map<Mesh*, int>::iterator it = mesh_map.find(mesh);
 
 		if(mesh_map.find(mesh) != mesh_map.end()) {
@@ -345,9 +440,10 @@ void BVH::pack_instances(size_t nodes_size)
 
 		int noffset = nodes_offset/nsize;
 		int mesh_tri_offset = mesh->tri_offset;
+		int mesh_curve_offset = mesh->curve_offset;
 
 		/* fill in node indexes for instances */
-		if(bvh->pack.is_leaf[0])
+		if((bvh->pack.is_leaf.size() != 0) && bvh->pack.is_leaf[0])
 			pack.object_node[object_offset++] = -noffset-1;
 		else
 			pack.object_node[object_offset++] = noffset;
@@ -358,10 +454,16 @@ void BVH::pack_instances(size_t nodes_size)
 		if(bvh->pack.prim_index.size()) {
 			size_t bvh_prim_index_size = bvh->pack.prim_index.size();
 			int *bvh_prim_index = &bvh->pack.prim_index[0];
+			int *bvh_prim_segment = &bvh->pack.prim_segment[0];
 			uint *bvh_prim_visibility = &bvh->pack.prim_visibility[0];
 
 			for(size_t i = 0; i < bvh_prim_index_size; i++) {
-				pack_prim_index[pack_prim_index_offset] = bvh_prim_index[i] + mesh_tri_offset;
+				if(bvh->pack.prim_segment[i] != ~0)
+					pack_prim_index[pack_prim_index_offset] = bvh_prim_index[i] + mesh_curve_offset;
+				else
+					pack_prim_index[pack_prim_index_offset] = bvh_prim_index[i] + mesh_tri_offset;
+
+				pack_prim_segment[pack_prim_index_offset] = bvh_prim_segment[i];
 				pack_prim_visibility[pack_prim_index_offset] = bvh_prim_visibility[i];
 				pack_prim_object[pack_prim_index_offset] = 0;  // unused for instances
 				pack_prim_index_offset++;
@@ -370,17 +472,17 @@ void BVH::pack_instances(size_t nodes_size)
 
 		/* merge triangle intersection data */
 		if(bvh->pack.tri_woop.size()) {
-			memcpy(pack_tri_woop+pack_tri_woop_offset, &bvh->pack.tri_woop[0],
+			memcpy(pack_tri_woop + pack_tri_woop_offset, &bvh->pack.tri_woop[0],
 				bvh->pack.tri_woop.size()*sizeof(float4));
 			pack_tri_woop_offset += bvh->pack.tri_woop.size();
 		}
 
 		/* merge nodes */
-		if( bvh->pack.nodes.size()) {
+		if(bvh->pack.nodes.size()) {
 			size_t nsize_bbox = (use_qbvh)? nsize-2: nsize-1;
 			int4 *bvh_nodes = &bvh->pack.nodes[0];
 			size_t bvh_nodes_size = bvh->pack.nodes.size(); 
-			int *bvh_is_leaf = &bvh->pack.is_leaf[0];
+			int *bvh_is_leaf = (bvh->pack.is_leaf.size() != 0) ? &bvh->pack.is_leaf[0] : NULL;
 
 			for(size_t i = 0, j = 0; i < bvh_nodes_size; i+=nsize, j++) {
 				memcpy(pack_nodes + pack_nodes_offset, bvh_nodes + i, nsize_bbox*sizeof(int4));
@@ -388,9 +490,9 @@ void BVH::pack_instances(size_t nodes_size)
 				/* modify offsets into arrays */
 				int4 data = bvh_nodes[i + nsize_bbox];
 
-				if(bvh_is_leaf[j]) {
-					data.x += tri_offset;
-					data.y += tri_offset;
+				if(bvh_is_leaf && bvh_is_leaf[j]) {
+					data.x += prim_offset;
+					data.y += prim_offset;
 				}
 				else {
 					data.x += (data.x < 0)? -noffset: noffset;
@@ -412,7 +514,7 @@ void BVH::pack_instances(size_t nodes_size)
 		}
 
 		nodes_offset += bvh->pack.nodes.size();
-		tri_offset += bvh->pack.prim_index.size();
+		prim_offset += bvh->pack.prim_index.size();
 	}
 }
 
@@ -442,9 +544,9 @@ void RegularBVH::pack_node(int idx, const BoundBox& b0, const BoundBox& b1, int 
 {
 	int4 data[BVH_NODE_SIZE] =
 	{
-		make_int4(__float_as_int(b0.min.x), __float_as_int(b0.max.x), __float_as_int(b0.min.y), __float_as_int(b0.max.y)),
-		make_int4(__float_as_int(b1.min.x), __float_as_int(b1.max.x), __float_as_int(b1.min.y), __float_as_int(b1.max.y)),
-		make_int4(__float_as_int(b0.min.z), __float_as_int(b0.max.z), __float_as_int(b1.min.z), __float_as_int(b1.max.z)),
+		make_int4(__float_as_int(b0.min.x), __float_as_int(b1.min.x), __float_as_int(b0.max.x), __float_as_int(b1.max.x)),
+		make_int4(__float_as_int(b0.min.y), __float_as_int(b1.min.y), __float_as_int(b0.max.y), __float_as_int(b1.max.y)),
+		make_int4(__float_as_int(b0.min.z), __float_as_int(b1.min.z), __float_as_int(b0.max.z), __float_as_int(b1.max.z)),
 		make_int4(c0, c1, visibility0, visibility1)
 	};
 
@@ -469,6 +571,7 @@ void RegularBVH::pack_nodes(const array<int>& prims, const BVHNode *root)
 	int nextNodeIdx = 0;
 
 	vector<BVHStackEntry> stack;
+	stack.reserve(BVHParams::MAX_DEPTH*2);
 	stack.push_back(BVHStackEntry(root, nextNodeIdx++));
 
 	while(stack.size()) {
@@ -499,7 +602,7 @@ void RegularBVH::refit_nodes()
 {
 	assert(!params.top_level);
 
-	BoundBox bbox;
+	BoundBox bbox = BoundBox::empty;
 	uint visibility = 0;
 	refit_node(0, (pack.is_leaf[0])? true: false, bbox, visibility);
 }
@@ -513,25 +616,51 @@ void RegularBVH::refit_node(int idx, bool leaf, BoundBox& bbox, uint& visibility
 
 	if(leaf) {
 		/* refit leaf node */
-		for(int tri = c0; tri < c1; tri++) {
-			int tidx = pack.prim_index[tri];
-			int tob = pack.prim_object[tri];
+		for(int prim = c0; prim < c1; prim++) {
+			int pidx = pack.prim_index[prim];
+			int tob = pack.prim_object[prim];
 			Object *ob = objects[tob];
 
-			if(tidx == -1) {
+			if(pidx == -1) {
 				/* object instance */
 				bbox.grow(ob->bounds);
 			}
 			else {
-				/* triangles */
+				/* primitives */
 				const Mesh *mesh = ob->mesh;
-				int tri_offset = (params.top_level)? mesh->tri_offset: 0;
-				const int *vidx = mesh->triangles[tidx - tri_offset].v;
-				const float3 *vpos = &mesh->verts[0];
 
-				bbox.grow(vpos[vidx[0]]);
-				bbox.grow(vpos[vidx[1]]);
-				bbox.grow(vpos[vidx[2]]);
+				if(pack.prim_segment[prim] != ~0) {
+					/* curves */
+					int str_offset = (params.top_level)? mesh->curve_offset: 0;
+					int k0 = mesh->curves[pidx - str_offset].first_key + pack.prim_segment[prim]; // XXX!
+					int k1 = k0 + 1;
+
+					float3 p[4];
+					p[0] = mesh->curve_keys[max(k0 - 1,mesh->curves[pidx - str_offset].first_key)].co;
+					p[1] = mesh->curve_keys[k0].co;
+					p[2] = mesh->curve_keys[k1].co;
+					p[3] = mesh->curve_keys[min(k1 + 1,mesh->curves[pidx - str_offset].first_key + mesh->curves[pidx - str_offset].num_keys - 1)].co;
+					float3 lower;
+					float3 upper;
+					curvebounds(&lower.x, &upper.x, p, 0);
+					curvebounds(&lower.y, &upper.y, p, 1);
+					curvebounds(&lower.z, &upper.z, p, 2);
+					float mr = max(mesh->curve_keys[k0].radius,mesh->curve_keys[k1].radius);
+					bbox.grow(lower, mr);
+					bbox.grow(upper, mr);
+
+					visibility |= PATH_RAY_CURVE;
+				}
+				else {
+					/* triangles */
+					int tri_offset = (params.top_level)? mesh->tri_offset: 0;
+					const int *vidx = mesh->triangles[pidx - tri_offset].v;
+					const float3 *vpos = &mesh->verts[0];
+
+					bbox.grow(vpos[vidx[0]]);
+					bbox.grow(vpos[vidx[1]]);
+					bbox.grow(vpos[vidx[2]]);
+				}
 			}
 
 			visibility |= ob->visibility;
@@ -541,7 +670,7 @@ void RegularBVH::refit_node(int idx, bool leaf, BoundBox& bbox, uint& visibility
 	}
 	else {
 		/* refit inner node, set bbox from children */
-		BoundBox bbox0, bbox1;
+		BoundBox bbox0 = BoundBox::empty, bbox1 = BoundBox::empty;
 		uint visibility0 = 0, visibility1 = 0;
 
 		refit_node((c0 < 0)? -c0-1: c0, (c0 < 0), bbox0, visibility0);
@@ -640,6 +769,7 @@ void QBVH::pack_nodes(const array<int>& prims, const BVHNode *root)
 	int nextNodeIdx = 0;
 
 	vector<BVHStackEntry> stack;
+	stack.reserve(BVHParams::MAX_DEPTH*2);
 	stack.push_back(BVHStackEntry(root, nextNodeIdx++));
 
 	while(stack.size()) {

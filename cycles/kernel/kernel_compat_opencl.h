@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #ifndef __KERNEL_COMPAT_OPENCL_H__
@@ -25,27 +23,31 @@
 /* no namespaces in opencl */
 #define CCL_NAMESPACE_BEGIN
 #define CCL_NAMESPACE_END
-#define WITH_OPENCL
+
+#ifdef __KERNEL_OPENCL_AMD__
+#define __CL_NO_FLOAT3__
+#endif
+
+#ifdef __CL_NO_FLOAT3__
+#define float3 float4
+#endif
+
+#ifdef __CL_NOINLINE__
+#define ccl_noinline __attribute__((noinline))
+#else
+#define ccl_noinline
+#endif
 
 /* in opencl all functions are device functions, so leave this empty */
-#define __device
-#define __device_inline
-#define __device_noinline
+#define ccl_device
+#define ccl_device_inline ccl_device
+#define ccl_device_noinline ccl_device ccl_noinline
+#define ccl_may_alias
+#define ccl_constant __constant
+#define ccl_global __global
 
 /* no assert in opencl */
 #define kernel_assert(cond)
-
-/* manual implementation of interpolated 1D lookup */
-__device float kernel_tex_interp_(__global float *data, int width, float x)
-{
-	x = clamp(x, 0.0f, 1.0f)*width;
-
-	int index = min((int)x, width-1);
-	int nindex = min(index+1, width-1);
-	float t = x - index;
-
-	return (1.0f - t)*data[index] + t*data[nindex];
-}
 
 /* make_type definitions with opencl style element initializers */
 #ifdef make_float2
@@ -68,7 +70,11 @@ __device float kernel_tex_interp_(__global float *data, int width, float x)
 #endif
 
 #define make_float2(x, y) ((float2)(x, y))
+#ifdef __CL_NO_FLOAT3__
+#define make_float3(x, y, z) ((float4)(x, y, z, 0.0f))
+#else
 #define make_float3(x, y, z) ((float3)(x, y, z))
+#endif
 #define make_float4(x, y, z, w) ((float4)(x, y, z, w))
 #define make_int2(x, y) ((int2)(x, y))
 #define make_int3(x, y, z) ((int3)(x, y, z))
@@ -92,20 +98,22 @@ __device float kernel_tex_interp_(__global float *data, int width, float x)
 #define tanf(x) tan(((float)x))
 #define logf(x) log(((float)x))
 #define floorf(x) floor(((float)x))
+#define ceilf(x) ceil(((float)x))
 #define expf(x) exp(((float)x))
 #define hypotf(x, y) hypot(((float)x), ((float)y))
 #define atan2f(x, y) atan2(((float)x), ((float)y))
 #define fmaxf(x, y) fmax(((float)x), ((float)y))
 #define fminf(x, y) fmin(((float)x), ((float)y))
+#define fmodf(x, y) fmod((float)x, (float)y)
 
 /* data lookup defines */
 #define kernel_data (*kg->data)
-#define kernel_tex_interp(t, x) kernel_tex_interp_(kg->t, kg->t##_width, x)
 #define kernel_tex_fetch(t, index) kg->t[index]
 
 /* define NULL */
 #define NULL 0
 
+#include "util_half.h"
 #include "util_types.h"
 
 #endif /* __KERNEL_COMPAT_OPENCL_H__ */

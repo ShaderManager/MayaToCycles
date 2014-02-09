@@ -19,9 +19,23 @@ public:
 	static MObject numRenderSamplesAttr;
 	static MObject computeDeviceAttr;
 
-	// Filter attributes
-	static MObject filterTypeAttr;
-	static MObject filterWidthAttr;
+	// Integrator attributes
+	static MObject seedAttr;
+	static MObject minBounceAttr;
+	static MObject maxBounceAttr;
+
+	static MObject maxDiffuseBounceAttr;
+	static MObject maxGlossyBounceAttr;
+	static MObject maxTransmissionBounceAttr;
+
+	static MObject probalisticTerminationAttr;
+
+	static MObject transparentMinBounceAttr;
+	static MObject transparentMaxBounceAttr;
+	static MObject transparentProbalisticAttr;
+	static MObject transparentShadowsAttr;
+
+	static MObject causticsAttr;
 
 private:
 	RenderGlobalsNode() {}

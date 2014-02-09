@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #ifndef __SVM_H__
@@ -31,7 +29,6 @@ CCL_NAMESPACE_BEGIN
 class Device;
 class DeviceScene;
 class ImageManager;
-struct KernelSunSky;
 class Scene;
 class ShaderGraph;
 class ShaderInput;
@@ -45,8 +42,10 @@ public:
 	SVMShaderManager();
 	~SVMShaderManager();
 
+	void reset(Scene *scene);
+
 	void device_update(Device *device, DeviceScene *dscene, Scene *scene, Progress& progress);
-	void device_free(Device *device, DeviceScene *dscene);
+	void device_free(Device *device, DeviceScene *dscene, Scene *scene);
 };
 
 /* Graph Compiler */
@@ -59,13 +58,17 @@ public:
 
 	void stack_assign(ShaderOutput *output);
 	void stack_assign(ShaderInput *input);
+	int stack_find_offset(ShaderSocketType type);
+	void stack_clear_offset(ShaderSocketType type, int offset);
 	void stack_link(ShaderInput *input, ShaderOutput *output);
+
 	void add_node(NodeType type, int a = 0, int b = 0, int c = 0);
 	void add_node(int a = 0, int b = 0, int c = 0, int d = 0);
 	void add_node(NodeType type, const float3& f);
 	void add_node(const float4& f);
+	void add_array(float4 *f, int num);
 	uint attribute(ustring name);
-	uint attribute(Attribute::Standard std);
+	uint attribute(AttributeStandard std);
 	uint encode_uchar4(uint x, uint y = 0, uint z = 0, uint w = 0);
 	uint closure_mix_weight_offset() { return mix_weight_offset; }
 
@@ -73,10 +76,10 @@ public:
 
 	ImageManager *image_manager;
 	ShaderManager *shader_manager;
-	KernelSunSky *sunsky;
 	bool background;
 
 protected:
+	/* stack */
 	struct Stack {
 		Stack() { memset(users, 0, sizeof(users)); }
 		Stack(const Stack& other) { memcpy(users, other.users, sizeof(users)); }
@@ -115,16 +118,19 @@ protected:
 
 	void stack_clear_temporary(ShaderNode *node);
 	int stack_size(ShaderSocketType type);
-	int stack_find_offset(ShaderSocketType type);
 	void stack_clear_users(ShaderNode *node, set<ShaderNode*>& done);
 
 	bool node_skip_input(ShaderNode *node, ShaderInput *input);
 
+	/* single closure */
 	void find_dependencies(set<ShaderNode*>& dependencies, const set<ShaderNode*>& done, ShaderInput *input);
 	void generate_svm_nodes(const set<ShaderNode*>& nodes, set<ShaderNode*>& done);
 	void generate_closure(ShaderNode *node, set<ShaderNode*>& done);
-	void generate_multi_closure(ShaderNode *node, set<ShaderNode*>& done, uint in_offset);
 
+	/* multi closure */
+	void generate_multi_closure(ShaderNode *node, set<ShaderNode*>& done, set<ShaderNode*>& closure_done);
+
+	/* compile */
 	void compile_type(Shader *shader, ShaderGraph *graph, ShaderType type);
 
 	vector<int4> svm_nodes;
@@ -135,6 +141,7 @@ protected:
 	int max_stack_use;
 	uint mix_weight_offset;
 	bool use_multi_closure;
+	bool compile_failed;
 };
 
 CCL_NAMESPACE_END

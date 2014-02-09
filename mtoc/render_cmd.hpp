@@ -2,6 +2,8 @@
 
 #include <maya/MPxCommand.h>
 #include <maya/MSyntax.h>
+#include <boost/thread/mutex.hpp>
+#include <boost/thread/condition_variable.hpp>
 
 class MDagPath;
 
@@ -9,6 +11,7 @@ namespace ccl
 {
 	class Session;
 	class Scene;
+	struct RenderTile;
 }
 
 class RenderCmd : public MPxCommand
@@ -32,7 +35,7 @@ private:
 	ccl::Scene* m_scene;
 	unsigned int m_width, m_height;
 
-	void update_framebuffer();
+	void update_tile(ccl::RenderTile& tile);
 
 	void sync_camera(const MDagPath& camera_path);
 	void sync_meshes();

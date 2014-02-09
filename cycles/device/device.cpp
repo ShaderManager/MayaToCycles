@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #include <stdlib.h>
@@ -24,56 +22,16 @@
 
 #include "util_cuda.h"
 #include "util_debug.h"
+#include "util_foreach.h"
+#include "util_half.h"
 #include "util_math.h"
 #include "util_opencl.h"
 #include "util_opengl.h"
+#include "util_time.h"
 #include "util_types.h"
 #include "util_vector.h"
 
 CCL_NAMESPACE_BEGIN
-
-/* Device Task */
-
-DeviceTask::DeviceTask(Type type_)
-: type(type_), x(0), y(0), w(0), h(0), rng_state(0), rgba(0), buffer(0),
-  sample(0), resolution(0),
-  displace_input(0), displace_offset(0), displace_x(0), displace_w(0)
-{
-}
-
-void DeviceTask::split(ThreadQueue<DeviceTask>& tasks, int num)
-{
-	if(type == DISPLACE) {
-		num = min(displace_w, num);
-
-		for(int i = 0; i < num; i++) {
-			int tx = displace_x + (displace_w/num)*i;
-			int tw = (i == num-1)? displace_w - i*(displace_w/num): displace_w/num;
-
-			DeviceTask task = *this;
-
-			task.displace_x = tx;
-			task.displace_w = tw;
-
-			tasks.push(task);
-		}
-	}
-	else {
-		num = min(h, num);
-
-		for(int i = 0; i < num; i++) {
-			int ty = y + (h/num)*i;
-			int th = (i == num-1)? h - i*(h/num): h/num;
-
-			DeviceTask task = *this;
-
-			task.y = ty;
-			task.h = th;
-
-			tasks.push(task);
-		}
-	}
-}
 
 /* Device */
 
@@ -84,7 +42,10 @@ void Device::pixels_alloc(device_memory& mem)
 
 void Device::pixels_copy_from(device_memory& mem, int y, int w, int h)
 {
-	mem_copy_from(mem, sizeof(uint8_t)*4*y*w, sizeof(uint8_t)*4*w*h);
+	if(mem.data_type == TYPE_HALF)
+		mem_copy_from(mem, y, w, h, sizeof(half4));
+	else
+		mem_copy_from(mem, y, w, h, sizeof(uchar4));
 }
 
 void Device::pixels_free(device_memory& mem)
@@ -92,7 +53,7 @@ void Device::pixels_free(device_memory& mem)
 	mem_free(mem);
 }
 
-void Device::draw_pixels(device_memory& rgba, int y, int w, int h, int width, int height, bool transparent)
+void Device::draw_pixels(device_memory& rgba, int y, int w, int h, int dy, int width, int height, bool transparent)
 {
 	pixels_copy_from(rgba, y, w, h);
 
@@ -101,54 +62,96 @@ void Device::draw_pixels(device_memory& rgba, int y, int w, int h, int width, in
 		glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 	}
 
-	glPixelZoom((float)width/(float)w, (float)height/(float)h);
-	glRasterPos2f(0, y);
+	glColor3f(1.0f, 1.0f, 1.0f);
 
-	uint8_t *pixels = (uint8_t*)rgba.data_pointer;
+	if(rgba.data_type == TYPE_HALF) {
+		/* for multi devices, this assumes the ineffecient method that we allocate
+		 * all pixels on the device even though we only render to a subset */
+		GLhalf *data_pointer = (GLhalf*)rgba.data_pointer;
+		data_pointer += 4*y*w;
 
-	/* for multi devices, this assumes the ineffecient method that we allocate
-	   all pixels on the device even though we only render to a subset */
-	pixels += 4*y*w;
+		/* draw half float texture, GLSL shader for display transform assumed to be bound */
+		GLuint texid;
+		glGenTextures(1, &texid);
+		glBindTexture(GL_TEXTURE_2D, texid);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F_ARB, w, h, 0, GL_RGBA, GL_HALF_FLOAT, data_pointer);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-	glDrawPixels(w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+		glEnable(GL_TEXTURE_2D);
 
-	glRasterPos2f(0.0f, 0.0f);
-	glPixelZoom(1.0f, 1.0f);
+		glPushMatrix();
+		glTranslatef(0.0f, (float)dy, 0.0f);
+
+		glBegin(GL_QUADS);
+		
+		glTexCoord2f(0.0f, 0.0f);
+		glVertex2f(0.0f, 0.0f);
+		glTexCoord2f(1.0f, 0.0f);
+		glVertex2f((float)width, 0.0f);
+		glTexCoord2f(1.0f, 1.0f);
+		glVertex2f((float)width, (float)height);
+		glTexCoord2f(0.0f, 1.0f);
+		glVertex2f(0.0f, (float)height);
+
+		glEnd();
+
+		glPopMatrix();
+
+		glBindTexture(GL_TEXTURE_2D, 0);
+		glDisable(GL_TEXTURE_2D);
+		glDeleteTextures(1, &texid);
+	}
+	else {
+		/* fallback for old graphics cards that don't support GLSL, half float,
+		 * and non-power-of-two textures */
+		glPixelZoom((float)width/(float)w, (float)height/(float)h);
+		glRasterPos2f(0, dy);
+
+		uint8_t *pixels = (uint8_t*)rgba.data_pointer;
+
+		pixels += 4*y*w;
+
+		glDrawPixels(w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+		glRasterPos2f(0.0f, 0.0f);
+		glPixelZoom(1.0f, 1.0f);
+	}
 
 	if(transparent)
 		glDisable(GL_BLEND);
 }
 
-Device *Device::create(DeviceType type, bool background, int threads)
+Device *Device::create(DeviceInfo& info, Stats &stats, bool background)
 {
 	Device *device;
 
-	switch(type) {
+	switch(info.type) {
 		case DEVICE_CPU:
-			device = device_cpu_create(threads);
+			device = device_cpu_create(info, stats, background);
 			break;
 #ifdef WITH_CUDA
 		case DEVICE_CUDA:
 			if(cuLibraryInit())
-				device = device_cuda_create(background);
+				device = device_cuda_create(info, stats, background);
 			else
 				device = NULL;
 			break;
 #endif
 #ifdef WITH_MULTI
 		case DEVICE_MULTI:
-			device = device_multi_create(background);
+			device = device_multi_create(info, stats, background);
 			break;
 #endif
 #ifdef WITH_NETWORK
 		case DEVICE_NETWORK:
-			device = device_network_create("127.0.0.1");
+			device = device_network_create(info, stats, "127.0.0.1");
 			break;
 #endif
 #ifdef WITH_OPENCL
 		case DEVICE_OPENCL:
 			if(clLibraryInit())
-				device = device_opencl_create(background);
+				device = device_opencl_create(info, stats, background);
 			else
 				device = NULL;
 			break;
@@ -192,30 +195,67 @@ string Device::string_from_type(DeviceType type)
 	return "";
 }
 
-vector<DeviceType> Device::available_types()
+vector<DeviceType>& Device::available_types()
 {
-	vector<DeviceType> types;
+	static vector<DeviceType> types;
+	static bool types_init = false;
 
-	types.push_back(DEVICE_CPU);
+	if(!types_init) {
+		types.push_back(DEVICE_CPU);
 
 #ifdef WITH_CUDA
-	if(cuLibraryInit())
-		types.push_back(DEVICE_CUDA);
+		if(cuLibraryInit())
+			types.push_back(DEVICE_CUDA);
 #endif
 
 #ifdef WITH_OPENCL
-	if(clLibraryInit())
-		types.push_back(DEVICE_OPENCL);
+		if(clLibraryInit())
+			types.push_back(DEVICE_OPENCL);
 #endif
 
 #ifdef WITH_NETWORK
-	types.push_back(DEVICE_NETWORK);
+		types.push_back(DEVICE_NETWORK);
 #endif
 #ifdef WITH_MULTI
-	types.push_back(DEVICE_MULTI);
+		types.push_back(DEVICE_MULTI);
 #endif
 
+		types_init = true;
+	}
+
 	return types;
+}
+
+vector<DeviceInfo>& Device::available_devices()
+{
+	static vector<DeviceInfo> devices;
+	static bool devices_init = false;
+
+	if(!devices_init) {
+#ifdef WITH_CUDA
+		if(cuLibraryInit())
+			device_cuda_info(devices);
+#endif
+
+#ifdef WITH_OPENCL
+		if(clLibraryInit())
+			device_opencl_info(devices);
+#endif
+
+#ifdef WITH_MULTI
+		device_multi_info(devices);
+#endif
+
+		device_cpu_info(devices);
+
+#ifdef WITH_NETWORK
+		device_network_info(devices);
+#endif
+
+		devices_init = true;
+	}
+
+	return devices;
 }
 
 CCL_NAMESPACE_END

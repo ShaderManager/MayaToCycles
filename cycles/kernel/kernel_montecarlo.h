@@ -28,56 +28,35 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ */
 
 #ifndef __KERNEL_MONTECARLO_CL__
 #define __KERNEL_MONTECARLO_CL__
 
 CCL_NAMESPACE_BEGIN
 
-/// Given values x and y on [0,1], convert them in place to values on
-/// [-1,1] uniformly distributed over a unit sphere.  This code is
-/// derived from Peter Shirley, "Realistic Ray Tracing", p. 103.
-__device void to_unit_disk(float *x, float *y)
+/* distribute uniform xy on [0,1] over unit disk [-1,1] */
+ccl_device void to_unit_disk(float *x, float *y)
 {
-	float r, phi;
-	float a = 2.0f * (*x) - 1.0f;
-	float b = 2.0f * (*y) - 1.0f;
-	if(a > -b) {
-		if(a > b) {
-			r = a;
-			 phi = M_PI_4_F *(b/a);
-		 } else {
-			 r = b;
-			 phi = M_PI_4_F *(2.0f - a/b);
-		 }
-	} else {
-		if(a < b) {
-			r = -a;
-			phi = M_PI_4_F *(4.0f + b/a);
-		} else {
-			r = -b;
-			if(b != 0.0f)
-				phi = M_PI_4_F *(6.0f - a/b);
-			else
-				phi = 0.0f;
-		}
-	}
+	float phi = M_2PI_F * (*x);
+	float r = sqrtf(*y);
+
 	*x = r * cosf(phi);
 	*y = r * sinf(phi);
 }
 
-__device void make_orthonormals_tangent(const float3 N, const float3 T, float3 *a, float3 *b)
+/* return an orthogonal tangent and bitangent given a normal and tangent that
+ * may not be exactly orthogonal */
+ccl_device void make_orthonormals_tangent(const float3 N, const float3 T, float3 *a, float3 *b)
 {
-	*b = cross(N, T);
+	*b = normalize(cross(N, T));
 	*a = cross(*b, N);
 }
 
-__device_inline void sample_cos_hemisphere(const float3 N,
+/* sample direction with cosine weighted distributed in hemisphere */
+ccl_device_inline void sample_cos_hemisphere(const float3 N,
 	float randu, float randv, float3 *omega_in, float *pdf)
 {
-	// Default closure BSDF implementation: uniformly sample
-	// cosine-weighted hemisphere above the point.
 	to_unit_disk(&randu, &randv);
 	float costheta = sqrtf(max(1.0f - randu * randu - randv * randv, 0.0f));
 	float3 T, B;
@@ -86,13 +65,14 @@ __device_inline void sample_cos_hemisphere(const float3 N,
 	*pdf = costheta *M_1_PI_F;
 }
 
-__device_inline void sample_uniform_hemisphere(const float3 N,
-											 float randu, float randv,
-											 float3 *omega_in, float *pdf)
+/* sample direction uniformly distributed in hemisphere */
+ccl_device_inline void sample_uniform_hemisphere(const float3 N,
+                                               float randu, float randv,
+                                               float3 *omega_in, float *pdf)
 {
 	float z = randu;
-	float r = sqrtf(max(0.f, 1.f - z*z));
-	float phi = 2.f * M_PI_F * randv;
+	float r = sqrtf(max(0.0f, 1.0f - z*z));
+	float phi = M_2PI_F * randv;
 	float x = r * cosf(phi);
 	float y = r * sinf(phi);
 
@@ -102,66 +82,80 @@ __device_inline void sample_uniform_hemisphere(const float3 N,
 	*pdf = 0.5f * M_1_PI_F;
 }
 
-__device float3 sample_uniform_sphere(float u1, float u2)
+/* sample direction uniformly distributed in cone */
+ccl_device_inline void sample_uniform_cone(const float3 N, float angle,
+                                         float randu, float randv,
+                                         float3 *omega_in, float *pdf)
 {
-    float z = 1.0f - 2.0f*u1;
-    float r = sqrtf(fmaxf(0.0f, 1.0f - z*z));
-    float phi = 2.0f*M_PI_F*u2;
-    float x = r*cosf(phi);
-    float y = r*sinf(phi);
+	float z = cosf(angle*randu);
+	float r = sqrtf(max(0.0f, 1.0f - z*z));
+	float phi = M_2PI_F * randv;
+	float x = r * cosf(phi);
+	float y = r * sinf(phi);
 
-    return make_float3(x, y, z);
+	float3 T, B;
+	make_orthonormals (N, &T, &B);
+	*omega_in = x * T + y * B + z * N;
+	*pdf = 0.5f * M_1_PI_F / (1.0f - cosf(angle));
 }
 
-__device float power_heuristic(float a, float b)
+/* sample uniform point on the surface of a sphere */
+ccl_device float3 sample_uniform_sphere(float u1, float u2)
+{
+	float z = 1.0f - 2.0f*u1;
+	float r = sqrtf(fmaxf(0.0f, 1.0f - z*z));
+	float phi = M_2PI_F*u2;
+	float x = r*cosf(phi);
+	float y = r*sinf(phi);
+
+	return make_float3(x, y, z);
+}
+
+ccl_device float balance_heuristic(float a, float b)
+{
+	return (a)/(a + b);
+}
+
+ccl_device float balance_heuristic_3(float a, float b, float c)
+{
+	return (a)/(a + b + c);
+}
+
+ccl_device float power_heuristic(float a, float b)
 {
 	return (a*a)/(a*a + b*b);
 }
 
-__device float2 concentric_sample_disk(float u1, float u2)
+ccl_device float power_heuristic_3(float a, float b, float c)
 {
-	float r, theta;
-	// Map uniform random numbers to $[-1,1]^2$
-	float sx = 2 * u1 - 1;
-	float sy = 2 * u2 - 1;
-
-	// Map square to $(r,\theta)$
-
-	// Handle degeneracy at the origin
-	if(sx == 0.0f && sy == 0.0f) {
-		return make_float2(0.0f, 0.0f);
-	}
-	if(sx >= -sy) {
-		if(sx > sy) {
-			// Handle first region of disk
-			r = sx;
-			if(sy > 0.0f) theta = sy/r;
-			else		  theta = 8.0f + sy/r;
-		}
-		else {
-			// Handle second region of disk
-			r = sy;
-			theta = 2.0f - sx/r;
-		}
-	}
-	else {
-		if(sx <= sy) {
-			// Handle third region of disk
-			r = -sx;
-			theta = 4.0f - sy/r;
-		}
-		else {
-			// Handle fourth region of disk
-			r = -sy;
-			theta = 6.0f + sx/r;
-		}
-	}
-
-	theta *= M_PI_4_F;
-	return make_float2(r * cosf(theta), r * sinf(theta));
+	return (a*a)/(a*a + b*b + c*c);
 }
 
-__device float2 regular_polygon_sample(float corners, float rotation, float u, float v)
+/* distribute uniform xy on [0,1] over unit disk [-1,1], with concentric mapping
+ * to better preserve stratification for some RNG sequences */
+ccl_device float2 concentric_sample_disk(float u1, float u2)
+{
+	float phi, r;
+	float a = 2.0f*u1 - 1.0f;
+	float b = 2.0f*u2 - 1.0f;
+
+	if(a == 0.0f && b == 0.0f) {
+		return make_float2(0.0f, 0.0f);
+	}
+	else if(a*a > b*b) {
+		r = a;
+		phi = M_PI_4_F * (b/a);
+	}
+	else {
+		r = b;
+		phi = M_PI_2_F - M_PI_4_F * (a/b);
+	}
+
+	return make_float2(r*cosf(phi), r*sinf(phi));
+}
+
+/* sample point in unit polygon with given number of corners and rotation */
+ccl_device float2 regular_polygon_sample(float corners, float rotation, float u, float v)
 {
 	/* sample corner number and reuse u */
 	float corner = floorf(u*corners);
@@ -183,24 +177,6 @@ __device float2 regular_polygon_sample(float corners, float rotation, float u, f
 	float sr = sinf(rotation);
 
 	return make_float2(cr*p.x - sr*p.y, sr*p.x + cr*p.y);
-}
-
-/* Spherical coordinates <-> Cartesion direction  */
-
-__device float2 direction_to_spherical(float3 dir)
-{
-	float theta = acosf(dir.z);
-	float phi = atan2f(dir.x, dir.y);
-
-	return make_float2(theta, phi);
-}
-
-__device float3 spherical_to_direction(float theta, float phi)
-{
-	return make_float3(
-		sinf(theta)*cosf(phi),
-		sinf(theta)*sinf(phi),
-		cosf(theta));
 }
 
 CCL_NAMESPACE_END

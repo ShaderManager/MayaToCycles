@@ -20,6 +20,7 @@
 
 #include "bvh_params.h"
 
+#include "util_string.h"
 #include "util_types.h"
 #include "util_vector.h"
 
@@ -45,21 +46,23 @@ class Progress;
 
 struct PackedBVH {
 	/* BVH nodes storage, one node is 4x int4, and contains two bounding boxes,
-	   and child, triangle or object indexes dependening on the node type */
+	 * and child, triangle or object indexes depending on the node type */
 	array<int4> nodes; 
 	/* object index to BVH node index mapping for instances */
 	array<int> object_node; 
 	/* precomputed triangle intersection data, one triangle is 4x float4 */
-	array<float4> tri_woop; 
+	array<float4> tri_woop;
+	/* primitive type - triangle or strand (should be moved to flag?) */
+	array<int> prim_segment;
 	/* visibility visibilitys for primitives */
 	array<uint> prim_visibility;
 	/* mapping from BVH primitive index to true primitive index, as primitives
-	   may be duplicated due to spatial splits. -1 for instances. */
+	 * may be duplicated due to spatial splits. -1 for instances. */
 	array<int> prim_index;
 	/* mapping from BVH primitive index, to the object id of that primitive. */
 	array<int> prim_object;
 	/* quick array to lookup if a node is a leaf, not used for traversal, only
-	   for instance BVH merging  */
+	 * for instance BVH merging  */
 	array<int> is_leaf;
 
 	/* index of the root node. */
@@ -83,12 +86,15 @@ public:
 	PackedBVH pack;
 	BVHParams params;
 	vector<Object*> objects;
+	string cache_filename;
 
 	static BVH *create(const BVHParams& params, const vector<Object*>& objects);
 	virtual ~BVH() {}
 
 	void build(Progress& progress);
 	void refit(Progress& progress);
+
+	void clear_cache_except();
 
 protected:
 	BVH(const BVHParams& params, const vector<Object*>& objects);
@@ -97,9 +103,10 @@ protected:
 	bool cache_read(CacheData& key);
 	void cache_write(CacheData& key);
 
-	/* triangles */
-	void pack_triangles();
+	/* triangles and strands*/
+	void pack_primitives();
 	void pack_triangle(int idx, float4 woop[3]);
+	void pack_curve_segment(int idx, float4 woop[3]);
 
 	/* merge instance BVH's */
 	void pack_instances(size_t nodes_size);

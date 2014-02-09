@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #ifndef __ATTRIBUTE_H__
@@ -33,6 +31,7 @@ class AttributeSet;
 class AttributeRequest;
 class AttributeRequestSet;
 class Mesh;
+struct Transform;
 
 /* Attribute
  *
@@ -41,48 +40,37 @@ class Mesh;
 
 class Attribute {
 public:
-	enum Element {
-		VERTEX,
-		FACE,
-		CORNER
-	};
-
-	enum Standard {
-		STD_NONE = 0,
-		STD_VERTEX_NORMAL,
-		STD_FACE_NORMAL,
-		STD_UV,
-		STD_GENERATED,
-		STD_POSITION_UNDEFORMED,
-		STD_POSITION_UNDISPLACED,
-		STD_NUM
-	};
-
 	ustring name;
-	Standard std;
+	AttributeStandard std;
 
 	TypeDesc type;
 	vector<char> buffer;
-	Element element;
+	AttributeElement element;
 
 	Attribute() {}
-	void set(ustring name, TypeDesc type, Element element);
-	void reserve(int numverts, int numfaces);
+	void set(ustring name, TypeDesc type, AttributeElement element);
+	void reserve(int numverts, int numfaces, int numcurves, int numkeys);
 
-	size_t data_sizeof();
-	size_t element_size(int numverts, int numfaces);
-	size_t buffer_size(int numverts, int numfaces);
+	size_t data_sizeof() const;
+	size_t element_size(int numverts, int numfaces, int numcurves, int numkeys) const;
+	size_t buffer_size(int numverts, int numfaces, int numcurves, int numkeys) const;
 
 	char *data() { return (buffer.size())? &buffer[0]: NULL; };
 	float3 *data_float3() { return (float3*)data(); }
 	float *data_float() { return (float*)data(); }
+	Transform *data_transform() { return (Transform*)data(); }
 
 	const char *data() const { return (buffer.size())? &buffer[0]: NULL; }
-	const float3 *data_float3() const { return (float3*)data(); }
-	const float *data_float() const { return (float*)data(); }
+	const float3 *data_float3() const { return (const float3*)data(); }
+	const float *data_float() const { return (const float*)data(); }
+	const Transform *data_transform() const { return (const Transform*)data(); }
+
+	void add(const float& f);
+	void add(const float3& f);
+	void add(const Transform& f);
 
 	static bool same_storage(TypeDesc a, TypeDesc b);
-	static ustring standard_name(Attribute::Standard std);
+	static const char *standard_name(AttributeStandard std);
 };
 
 /* Attribute Set
@@ -91,23 +79,24 @@ public:
 
 class AttributeSet {
 public:
-	Mesh *mesh;
+	Mesh *triangle_mesh;
+	Mesh *curve_mesh;
 	list<Attribute> attributes;
 
-	AttributeSet(Mesh *mesh);
+	AttributeSet();
 	~AttributeSet();
 
-	Attribute *add(ustring name, TypeDesc type, Attribute::Element element);
-	Attribute *find(ustring name);
+	Attribute *add(ustring name, TypeDesc type, AttributeElement element);
+	Attribute *find(ustring name) const;
 	void remove(ustring name);
 
-	Attribute *add(Attribute::Standard std, ustring name = ustring());
-	Attribute *find(Attribute::Standard std);
-	void remove(Attribute::Standard std);
+	Attribute *add(AttributeStandard std, ustring name = ustring());
+	Attribute *find(AttributeStandard std) const;
+	void remove(AttributeStandard std);
 
 	Attribute *find(AttributeRequest& req);
 
-	void reserve(int numverts, int numfaces);
+	void reserve();
 	void clear();
 };
 
@@ -115,20 +104,20 @@ public:
  *
  * Request from a shader to use a certain attribute, so we can figure out
  * which ones we need to export from the host app end store for the kernel.
- * The attribute is found either by name or by standard. */
+ * The attribute is found either by name or by standard attribute type. */
 
 class AttributeRequest {
 public:
 	ustring name;
-	Attribute::Standard std;
+	AttributeStandard std;
 
 	/* temporary variables used by MeshManager */
-	TypeDesc type;
-	AttributeElement element;
-	int offset;
+	TypeDesc triangle_type, curve_type;
+	AttributeElement triangle_element, curve_element;
+	int triangle_offset, curve_offset;
 
 	AttributeRequest(ustring name_);
-	AttributeRequest(Attribute::Standard std);
+	AttributeRequest(AttributeStandard std);
 };
 
 /* AttributeRequestSet
@@ -143,11 +132,11 @@ public:
 	~AttributeRequestSet();
 
 	void add(ustring name);
-	void add(Attribute::Standard std);
+	void add(AttributeStandard std);
 	void add(AttributeRequestSet& reqs);
 
 	bool find(ustring name);
-	bool find(Attribute::Standard std);
+	bool find(AttributeStandard std);
 
 	size_t size();
 	void clear();

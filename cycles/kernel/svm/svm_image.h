@@ -1,45 +1,139 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 CCL_NAMESPACE_BEGIN
 
-__device float4 svm_image_texture(KernelGlobals *kg, int id, float x, float y)
+#ifdef __KERNEL_OPENCL__
+
+/* For OpenCL all images are packed in a single array, and we do manual lookup
+ * and interpolation. */
+
+ccl_device_inline float4 svm_image_texture_read(KernelGlobals *kg, int offset)
 {
+	uchar4 r = kernel_tex_fetch(__tex_image_packed, offset);
+	float f = 1.0f/255.0f;
+	return make_float4(r.x*f, r.y*f, r.z*f, r.w*f);
+}
+
+ccl_device_inline int svm_image_texture_wrap_periodic(int x, int width)
+{
+	x %= width;
+	if(x < 0)
+		x += width;
+	return x;
+}
+
+ccl_device_inline int svm_image_texture_wrap_clamp(int x, int width)
+{
+	return clamp(x, 0, width-1);
+}
+
+ccl_device_inline float svm_image_texture_frac(float x, int *ix)
+{
+	int i = float_to_int(x) - ((x < 0.0f)? 1: 0);
+	*ix = i;
+	return x - (float)i;
+}
+
+ccl_device float4 svm_image_texture(KernelGlobals *kg, int id, float x, float y, uint srgb, uint use_alpha)
+{
+	/* first slots are used by float textures, which are not supported here */
+	if(id < TEX_NUM_FLOAT_IMAGES)
+		return make_float4(1.0f, 0.0f, 1.0f, 1.0f);
+
+	id -= TEX_NUM_FLOAT_IMAGES;
+
+	uint4 info = kernel_tex_fetch(__tex_image_packed_info, id);
+	uint width = info.x;
+	uint height = info.y;
+	uint offset = info.z;
+	uint periodic = info.w;
+
+	int ix, iy, nix, niy;
+	float tx = svm_image_texture_frac(x*width, &ix);
+	float ty = svm_image_texture_frac(y*height, &iy);
+
+	if(periodic) {
+		ix = svm_image_texture_wrap_periodic(ix, width);
+		iy = svm_image_texture_wrap_periodic(iy, height);
+
+		nix = svm_image_texture_wrap_periodic(ix+1, width);
+		niy = svm_image_texture_wrap_periodic(iy+1, height);
+	}
+	else {
+		ix = svm_image_texture_wrap_clamp(ix, width);
+		iy = svm_image_texture_wrap_clamp(iy, height);
+
+		nix = svm_image_texture_wrap_clamp(ix+1, width);
+		niy = svm_image_texture_wrap_clamp(iy+1, height);
+	}
+
+	float4 r = (1.0f - ty)*(1.0f - tx)*svm_image_texture_read(kg, offset + ix + iy*width);
+	r += (1.0f - ty)*tx*svm_image_texture_read(kg, offset + nix + iy*width);
+	r += ty*(1.0f - tx)*svm_image_texture_read(kg, offset + ix + niy*width);
+	r += ty*tx*svm_image_texture_read(kg, offset + nix + niy*width);
+
+	if(use_alpha && r.w != 1.0f && r.w != 0.0f) {
+		float invw = 1.0f/r.w;
+		r.x *= invw;
+		r.y *= invw;
+		r.z *= invw;
+
+		if(id >= TEX_NUM_FLOAT_IMAGES) {
+			r.x = min(r.x, 1.0f);
+			r.y = min(r.y, 1.0f);
+			r.z = min(r.z, 1.0f);
+		}
+	}
+
+	if(srgb) {
+		r.x = color_srgb_to_scene_linear(r.x);
+		r.y = color_srgb_to_scene_linear(r.y);
+		r.z = color_srgb_to_scene_linear(r.z);
+	}
+
+	return r;
+}
+
+#else
+
+ccl_device float4 svm_image_texture(KernelGlobals *kg, int id, float x, float y, uint srgb, uint use_alpha)
+{
+#if defined(__KERNEL_CPU__) && defined(__KERNEL_SSE2__)
+	union { float4 rgba; __m128 m128; } r = { kernel_tex_image_interp(id, x, y) };
+#elif defined(__KERNEL_CPU__)
+	float4 r = kernel_tex_image_interp(id, x, y);
+#else
 	float4 r;
 
 	/* not particularly proud of this massive switch, what are the
-	   alternatives?
-	   - use a single big 1D texture, and do our own lookup/filtering
-	   - group by size and use a 3d texture, performance impact
-	   - group into larger texture with some padding for correct lerp
+	 * alternatives?
+	 * - use a single big 1D texture, and do our own lookup/filtering
+	 * - group by size and use a 3d texture, performance impact
+	 * - group into larger texture with some padding for correct lerp
+	 *
+	 * also note that cuda has 128 textures limit, we use 100 now, since
+	 * we still need some for other storage */
 
-	   also note that cuda has 128 textures limit, we use 100 now, since
-	   we still need some for other storage */
-
-#ifdef __KERNEL_OPENCL__
-	r = make_float4(0.0f, 0.0f, 0.0f, 0.0f); /* todo */
-#else
 	switch(id) {
-		case 0: r = kernel_tex_image_interp(__tex_image_000, x, y); break;
-		case 1: r = kernel_tex_image_interp(__tex_image_001, x, y); break;
-		case 2: r = kernel_tex_image_interp(__tex_image_002, x, y); break;
-		case 3: r = kernel_tex_image_interp(__tex_image_003, x, y); break;
-		case 4: r = kernel_tex_image_interp(__tex_image_004, x, y); break;
+		case 0: r = kernel_tex_image_interp(__tex_image_float_000, x, y); break;
+		case 1: r = kernel_tex_image_interp(__tex_image_float_001, x, y); break;
+		case 2: r = kernel_tex_image_interp(__tex_image_float_002, x, y); break;
+		case 3: r = kernel_tex_image_interp(__tex_image_float_003, x, y); break;
+		case 4: r = kernel_tex_image_interp(__tex_image_float_004, x, y); break;
 		case 5: r = kernel_tex_image_interp(__tex_image_005, x, y); break;
 		case 6: r = kernel_tex_image_interp(__tex_image_006, x, y); break;
 		case 7: r = kernel_tex_image_interp(__tex_image_007, x, y); break;
@@ -141,19 +235,35 @@ __device float4 svm_image_texture(KernelGlobals *kg, int id, float x, float y)
 	}
 #endif
 
-	return r;
-}
+#ifdef __KERNEL_SSE2__
+	if(use_alpha && r.rgba.w != 1.0f && r.rgba.w != 0.0f) {
+		float alpha = r.rgba.w;
+		r.m128 = _mm_div_ps(r.m128, _mm_set1_ps(alpha));
+		if(id >= TEX_NUM_FLOAT_IMAGES)
+			r.m128 = _mm_min_ps(r.m128, _mm_set1_ps(1.0f));
+		r.rgba.w = alpha;
+	}
 
-__device void svm_node_tex_image(KernelGlobals *kg, ShaderData *sd, float *stack, uint4 node)
-{
-	uint id = node.y;
-	uint co_offset, out_offset, alpha_offset, srgb;
+	if(srgb) {
+		float alpha = r.rgba.w;
+		r.m128 = color_srgb_to_scene_linear(r.m128);
+		r.rgba.w = alpha;
+	}
 
-	decode_node_uchar4(node.z, &co_offset, &out_offset, &alpha_offset, &srgb);
+	return r.rgba;
+#else
+	if(use_alpha && r.w != 1.0f && r.w != 0.0f) {
+		float invw = 1.0f/r.w;
+		r.x *= invw;
+		r.y *= invw;
+		r.z *= invw;
 
-	float3 co = stack_load_float3(stack, co_offset);
-	float4 f = svm_image_texture(kg, id, co.x, co.y);
-	float3 r = make_float3(f.x, f.y, f.z);
+		if(id >= TEX_NUM_FLOAT_IMAGES) {
+			r.x = min(r.x, 1.0f);
+			r.y = min(r.y, 1.0f);
+			r.z = min(r.z, 1.0f);
+		}
+	}
 
 	if(srgb) {
 		r.x = color_srgb_to_scene_linear(r.x);
@@ -161,33 +271,141 @@ __device void svm_node_tex_image(KernelGlobals *kg, ShaderData *sd, float *stack
 		r.z = color_srgb_to_scene_linear(r.z);
 	}
 
+	return r;
+#endif
+}
+
+#endif
+
+ccl_device void svm_node_tex_image(KernelGlobals *kg, ShaderData *sd, float *stack, uint4 node)
+{
+	uint id = node.y;
+	uint co_offset, out_offset, alpha_offset, srgb;
+
+	decode_node_uchar4(node.z, &co_offset, &out_offset, &alpha_offset, &srgb);
+
+	float3 co = stack_load_float3(stack, co_offset);
+	uint use_alpha = stack_valid(alpha_offset);
+	float4 f = svm_image_texture(kg, id, co.x, co.y, srgb, use_alpha);
+
 	if(stack_valid(out_offset))
-		stack_store_float3(stack, out_offset, r);
+		stack_store_float3(stack, out_offset, make_float3(f.x, f.y, f.z));
 	if(stack_valid(alpha_offset))
 		stack_store_float(stack, alpha_offset, f.w);
 }
 
-__device void svm_node_tex_environment(KernelGlobals *kg, ShaderData *sd, float *stack, uint4 node)
+ccl_device void svm_node_tex_image_box(KernelGlobals *kg, ShaderData *sd, float *stack, uint4 node)
+{
+	/* get object space normal */
+	float3 N = sd->N;
+
+	N = sd->N;
+	if(sd->object != ~0)
+		object_inverse_normal_transform(kg, sd, &N);
+
+	/* project from direction vector to barycentric coordinates in triangles */
+	N.x = fabsf(N.x);
+	N.y = fabsf(N.y);
+	N.z = fabsf(N.z);
+
+	N /= (N.x + N.y + N.z);
+
+	/* basic idea is to think of this as a triangle, each corner representing
+	 * one of the 3 faces of the cube. in the corners we have single textures,
+	 * in between we blend between two textures, and in the middle we a blend
+	 * between three textures.
+	 *
+	 * the Nxyz values are the barycentric coordinates in an equilateral
+	 * triangle, which in case of blending, in the middle has a smaller
+	 * equilateral triangle where 3 textures blend. this divides things into
+	 * 7 zones, with an if() test for each zone */
+
+	float3 weight = make_float3(0.0f, 0.0f, 0.0f);
+	float blend = __int_as_float(node.w);
+	float limit = 0.5f*(1.0f + blend);
+
+	/* first test for corners with single texture */
+	if(N.x > limit*(N.x + N.y) && N.x > limit*(N.x + N.z)) {
+		weight.x = 1.0f;
+	}
+	else if(N.y > limit*(N.x + N.y) && N.y > limit*(N.y + N.z)) {
+		weight.y = 1.0f;
+	}
+	else if(N.z > limit*(N.x + N.z) && N.z > limit*(N.y + N.z)) {
+		weight.z = 1.0f;
+	}
+	else if(blend > 0.0f) {
+		/* in case of blending, test for mixes between two textures */
+		if(N.z < (1.0f - limit)*(N.y + N.x)) {
+			weight.x = N.x/(N.x + N.y);
+			weight.x = clamp((weight.x - 0.5f*(1.0f - blend))/blend, 0.0f, 1.0f);
+			weight.y = 1.0f - weight.x;
+		}
+		else if(N.x < (1.0f - limit)*(N.y + N.z)) {
+			weight.y = N.y/(N.y + N.z);
+			weight.y = clamp((weight.y - 0.5f*(1.0f - blend))/blend, 0.0f, 1.0f);
+			weight.z = 1.0f - weight.y;
+		}
+		else if(N.y < (1.0f - limit)*(N.x + N.z)) {
+			weight.x = N.x/(N.x + N.z);
+			weight.x = clamp((weight.x - 0.5f*(1.0f - blend))/blend, 0.0f, 1.0f);
+			weight.z = 1.0f - weight.x;
+		}
+		else {
+			/* last case, we have a mix between three */
+			weight.x = ((2.0f - limit)*N.x + (limit - 1.0f))/(2.0f*limit - 1.0f);
+			weight.y = ((2.0f - limit)*N.y + (limit - 1.0f))/(2.0f*limit - 1.0f);
+			weight.z = ((2.0f - limit)*N.z + (limit - 1.0f))/(2.0f*limit - 1.0f);
+		}
+	}
+
+	/* now fetch textures */
+	uint co_offset, out_offset, alpha_offset, srgb;
+	decode_node_uchar4(node.z, &co_offset, &out_offset, &alpha_offset, &srgb);
+
+	float3 co = stack_load_float3(stack, co_offset);
+	uint id = node.y;
+
+	float4 f = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+	uint use_alpha = stack_valid(alpha_offset);
+
+	if(weight.x > 0.0f)
+		f += weight.x*svm_image_texture(kg, id, co.y, co.z, srgb, use_alpha);
+	if(weight.y > 0.0f)
+		f += weight.y*svm_image_texture(kg, id, co.x, co.z, srgb, use_alpha);
+	if(weight.z > 0.0f)
+		f += weight.z*svm_image_texture(kg, id, co.y, co.x, srgb, use_alpha);
+
+	if(stack_valid(out_offset))
+		stack_store_float3(stack, out_offset, make_float3(f.x, f.y, f.z));
+	if(stack_valid(alpha_offset))
+		stack_store_float(stack, alpha_offset, f.w);
+}
+
+
+ccl_device void svm_node_tex_environment(KernelGlobals *kg, ShaderData *sd, float *stack, uint4 node)
 {
 	uint id = node.y;
 	uint co_offset, out_offset, alpha_offset, srgb;
+	uint projection = node.w;
 
 	decode_node_uchar4(node.z, &co_offset, &out_offset, &alpha_offset, &srgb);
 
 	float3 co = stack_load_float3(stack, co_offset);
-	float u = (atan2f(co.y, co.x) + M_PI_F)/(2*M_PI_F);
-	float v = atan2f(co.z, hypotf(co.x, co.y))/M_PI_F + 0.5f;
-	float4 f = svm_image_texture(kg, id, u, v);
-	float3 r = make_float3(f.x, f.y, f.z);
+	float2 uv;
 
-	if(srgb) {
-		r.x = color_srgb_to_scene_linear(r.x);
-		r.y = color_srgb_to_scene_linear(r.y);
-		r.z = color_srgb_to_scene_linear(r.z);
-	}
+	co = normalize(co);
+	
+	if(projection == 0)
+		uv = direction_to_equirectangular(co);
+	else
+		uv = direction_to_mirrorball(co);
+
+	uint use_alpha = stack_valid(alpha_offset);
+	float4 f = svm_image_texture(kg, id, uv.x, uv.y, srgb, use_alpha);
 
 	if(stack_valid(out_offset))
-		stack_store_float3(stack, out_offset, r);
+		stack_store_float3(stack, out_offset, make_float3(f.x, f.y, f.z));
 	if(stack_valid(alpha_offset))
 		stack_store_float(stack, alpha_offset, f.w);
 }

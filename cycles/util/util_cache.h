@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #ifndef __UTIL_CACHE_H__
@@ -32,6 +30,7 @@
  * different scenes where it may be hard to detect duplicate work.
  */
 
+#include "util_set.h"
 #include "util_string.h"
 #include "util_vector.h"
 
@@ -50,28 +49,28 @@ class CacheData {
 public:
 	vector<CacheBuffer> buffers;
 	string name;
+	string filename;
+	bool have_filename;
 	FILE *f;
 
 	CacheData(const string& name = "");
 	~CacheData();
 
+	const string& get_filename();
+
 	template<typename T> void add(const vector<T>& data)
 	{
-		if(data.size()) {
-			CacheBuffer buffer(&data[0], data.size()*sizeof(T));
-			buffers.push_back(buffer);
-		}
+		CacheBuffer buffer(data.size()? &data[0]: NULL, data.size()*sizeof(T));
+		buffers.push_back(buffer);
 	}
 
 	template<typename T> void add(const array<T>& data)
 	{
-		if(data.size()) {
-			CacheBuffer buffer(&data[0], data.size()*sizeof(T));
-			buffers.push_back(buffer);
-		}
+		CacheBuffer buffer(data.size()? &data[0]: NULL, data.size()*sizeof(T));
+		buffers.push_back(buffer);
 	}
 
-	void add(void *data, size_t size)
+	void add(const void *data, size_t size)
 	{
 		if(size) {
 			CacheBuffer buffer(data, size);
@@ -79,13 +78,19 @@ public:
 		}
 	}
 
-	void add(int& data)
+	void add(const int& data)
 	{
 		CacheBuffer buffer(&data, sizeof(int));
 		buffers.push_back(buffer);
 	}
 
-	void add(size_t& data)
+	void add(const float& data)
+	{
+		CacheBuffer buffer(&data, sizeof(float));
+		buffers.push_back(buffer);
+	}
+
+	void add(const size_t& data)
 	{
 		CacheBuffer buffer(&data, sizeof(size_t));
 		buffers.push_back(buffer);
@@ -106,19 +111,37 @@ public:
 		data.resize(size/sizeof(T));
 
 		if(!fread(&data[0], size, 1, f)) {
-			fprintf(stderr, "Failed to read vector data from cache (%ld).\n", size);
+			fprintf(stderr, "Failed to read vector data from cache (%lu).\n", (unsigned long)size);
 			return;
 		}
 	}
 
 	void read(int& data)
 	{
+		size_t size;
+
+		if(!fread(&size, sizeof(size), 1, f))
+			fprintf(stderr, "Failed to read int size from cache.\n");
 		if(!fread(&data, sizeof(data), 1, f))
 			fprintf(stderr, "Failed to read int from cache.\n");
 	}
 
+	void read(float& data)
+	{
+		size_t size;
+
+		if(!fread(&size, sizeof(size), 1, f))
+			fprintf(stderr, "Failed to read float size from cache.\n");
+		if(!fread(&data, sizeof(data), 1, f))
+			fprintf(stderr, "Failed to read float from cache.\n");
+	}
+
 	void read(size_t& data)
 	{
+		size_t size;
+
+		if(!fread(&size, sizeof(size), 1, f))
+			fprintf(stderr, "Failed to read size_t size from cache.\n");
 		if(!fread(&data, sizeof(data), 1, f))
 			fprintf(stderr, "Failed to read size_t from cache.\n");
 	}
@@ -128,11 +151,13 @@ class Cache {
 public:
 	static Cache global;
 
-	void insert(const CacheData& key, const CacheData& value);
-	bool lookup(const CacheData& key, CacheData& value);
+	void insert(CacheData& key, CacheData& value);
+	bool lookup(CacheData& key, CacheData& value);
+
+	void clear_except(const string& name, const set<string>& except);
 
 protected:
-	string data_filename(const CacheData& key);
+	string data_filename(CacheData& key);
 };
 
 CCL_NAMESPACE_END

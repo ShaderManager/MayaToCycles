@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #ifndef __GRAPH_H__
@@ -31,24 +29,30 @@
 CCL_NAMESPACE_BEGIN
 
 class AttributeRequestSet;
+class Shader;
 class ShaderInput;
 class ShaderOutput;
 class ShaderNode;
 class ShaderGraph;
 class SVMCompiler;
 class OSLCompiler;
+class OutputNode;
 
 /* Socket Type
  *
  * Data type for inputs and outputs */
 
 enum ShaderSocketType {
+	SHADER_SOCKET_UNDEFINED,
+	
 	SHADER_SOCKET_FLOAT,
+	SHADER_SOCKET_INT,
 	SHADER_SOCKET_COLOR,
 	SHADER_SOCKET_VECTOR,
 	SHADER_SOCKET_POINT,
 	SHADER_SOCKET_NORMAL,
-	SHADER_SOCKET_CLOSURE
+	SHADER_SOCKET_CLOSURE,
+	SHADER_SOCKET_STRING
 };
 
 /* Bump
@@ -61,6 +65,20 @@ enum ShaderBump {
 	SHADER_BUMP_CENTER,
 	SHADER_BUMP_DX,
 	SHADER_BUMP_DY
+};
+
+/* Identifiers for some special node types.
+ *
+ * The graph needs to identify these in the clean function.
+ * Cannot use dynamic_cast, as this is disabled for OSL. */
+
+enum ShaderNodeSpecialType {
+	SHADER_SPECIAL_TYPE_NONE,
+	SHADER_SPECIAL_TYPE_PROXY,
+	SHADER_SPECIAL_TYPE_MIX_CLOSURE,
+	SHADER_SPECIAL_TYPE_AUTOCONVERT,
+	SHADER_SPECIAL_TYPE_GEOMETRY,
+	SHADER_SPECIAL_TYPE_SCRIPT
 };
 
 /* Enum
@@ -101,12 +119,20 @@ public:
 		INCOMING,
 		NORMAL,
 		POSITION,
+		TANGENT,
 		NONE
+	};
+
+	enum Usage {
+		USE_SVM = 1,
+		USE_OSL = 2,
+		USE_ALL = USE_SVM|USE_OSL
 	};
 
 	ShaderInput(ShaderNode *parent, const char *name, ShaderSocketType type);
 	void set(const float3& v) { value = v; }
 	void set(float f) { value = make_float3(f, 0, 0); }
+	void set(const ustring v) { value_string = v; }
 
 	const char *name;
 	ShaderSocketType type;
@@ -116,9 +142,10 @@ public:
 
 	DefaultValue default_value;
 	float3 value;
+	ustring value_string;
 
 	int stack_offset; /* for SVM compiler */
-	bool osl_only;
+	int usage;
 };
 
 /* Output
@@ -151,15 +178,21 @@ public:
 	ShaderInput *input(const char *name);
 	ShaderOutput *output(const char *name);
 
-	ShaderInput *add_input(const char *name, ShaderSocketType type, float value=0.0f);
-	ShaderInput *add_input(const char *name, ShaderSocketType type, float3 value);
-	ShaderInput *add_input(const char *name, ShaderSocketType type, ShaderInput::DefaultValue value, bool osl_only=false);
+	ShaderInput *add_input(const char *name, ShaderSocketType type, float value=0.0f, int usage=ShaderInput::USE_ALL);
+	ShaderInput *add_input(const char *name, ShaderSocketType type, float3 value, int usage=ShaderInput::USE_ALL);
+	ShaderInput *add_input(const char *name, ShaderSocketType type, ShaderInput::DefaultValue value, int usage=ShaderInput::USE_ALL);
 	ShaderOutput *add_output(const char *name, ShaderSocketType type);
 
 	virtual ShaderNode *clone() const = 0;
-	virtual void attributes(AttributeRequestSet *attributes);
+	virtual void attributes(Shader *shader, AttributeRequestSet *attributes);
 	virtual void compile(SVMCompiler& compiler) = 0;
 	virtual void compile(OSLCompiler& compiler) = 0;
+
+	virtual bool has_surface_emission() { return false; }
+	virtual bool has_surface_transparent() { return false; }
+	virtual bool has_surface_bssrdf() { return false; }
+	virtual bool has_converter_blackbody() { return false; }
+	virtual bool has_bssrdf_bump() { return false; }
 
 	vector<ShaderInput*> inputs;
 	vector<ShaderOutput*> outputs;
@@ -167,6 +200,8 @@ public:
 	ustring name; /* name, not required to be unique */
 	int id; /* index in graph node array */
 	ShaderBump bump; /* for bump mapping utility */
+	
+	ShaderNodeSpecialType special_type;	/* special node type */
 };
 
 
@@ -196,6 +231,7 @@ public:
 class ShaderGraph {
 public:
 	list<ShaderNode*> nodes;
+	size_t num_node_ids;
 	bool finalized;
 
 	ShaderGraph();
@@ -204,12 +240,13 @@ public:
 	ShaderGraph *copy();
 
 	ShaderNode *add(ShaderNode *node);
-	ShaderNode *output();
+	OutputNode *output();
 
 	void connect(ShaderOutput *from, ShaderInput *to);
 	void disconnect(ShaderInput *to);
 
-	void finalize(bool do_bump = false, bool do_osl = false);
+	void remove_unneeded_nodes();
+	void finalize(bool do_bump = false, bool do_osl = false, bool do_multi_closure = false);
 
 protected:
 	typedef pair<ShaderNode* const, ShaderNode*> NodePair;
@@ -220,7 +257,9 @@ protected:
 	void break_cycles(ShaderNode *node, vector<bool>& visited, vector<bool>& on_stack);
 	void clean();
 	void bump_from_displacement();
+	void refine_bump_nodes();
 	void default_inputs(bool do_osl);
+	void transform_multi_closure(ShaderNode *node, ShaderOutput *weight_out, bool volume);
 };
 
 CCL_NAMESPACE_END

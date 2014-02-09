@@ -1,6 +1,8 @@
 #include <maya/MFnPlugin.h>
 #include <maya/MGlobal.h>
 
+#include "util_path.h"
+
 #include "render_cmd.hpp"
 #include "render_globals_node.hpp"
 
@@ -22,6 +24,8 @@ MStatus initializePlugin(MObject plugin_object)
 	MString init_python_package = "import sys; sys.path.append(\"";
 	init_python_package += "d:/Coding/C++/Projects/MayaCycles/scripts/";
 	init_python_package += "\")";
+
+	ccl::path_init(plugin.loadPath().asChar());
 
 	status = MGlobal::executePythonCommand(init_python_package);
 	CHECK_MSTATUS_AND_RETURN_IT(status);

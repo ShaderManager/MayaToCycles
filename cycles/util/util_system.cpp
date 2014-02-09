@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #include "util_system.h"
@@ -103,9 +101,7 @@ string system_cpu_brand_string()
 		replace_string(brand, "(TM)", "");
 		replace_string(brand, "(R)", "");
 
-		size_t i;
-		if((i = brand.find("  ")) != string::npos)
-			brand = brand.substr(0, i);
+		brand = string_strip(brand);
 
 		return brand;
 	}
@@ -117,6 +113,120 @@ int system_cpu_bits()
 {
 	return (sizeof(void*)*8);
 }
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(i386) || defined(_M_IX86)
+
+struct CPUCapabilities {
+	bool x64;
+	bool mmx;
+	bool sse;
+	bool sse2;
+	bool sse3;
+	bool ssse3;
+	bool sse41;
+	bool sse42;
+	bool sse4a;
+	bool avx;
+	bool xop;
+	bool fma3;
+	bool fma4;
+};
+
+static CPUCapabilities& system_cpu_capabilities()
+{
+	static CPUCapabilities caps;
+	static bool caps_init = false;
+
+	if(!caps_init) {
+		int result[4], num; //, num_ex;
+
+		memset(&caps, 0, sizeof(caps));
+
+		__cpuid(result, 0);
+		num = result[0];
+
+#if 0
+		__cpuid(result, 0x80000000);
+		num_ex = result[0];
+#endif
+
+		if(num >= 1) {
+			__cpuid(result, 0x00000001);
+			caps.mmx = (result[3] & ((int)1 << 23)) != 0;
+			caps.sse = (result[3] & ((int)1 << 25)) != 0;
+			caps.sse2 = (result[3] & ((int)1 << 26)) != 0;
+			caps.sse3 = (result[2] & ((int)1 <<  0)) != 0;
+
+			caps.ssse3 = (result[2] & ((int)1 <<  9)) != 0;
+			caps.sse41 = (result[2] & ((int)1 << 19)) != 0;
+			caps.sse42 = (result[2] & ((int)1 << 20)) != 0;
+
+			caps.avx = (result[2] & ((int)1 << 28)) != 0;
+			caps.fma3 = (result[2] & ((int)1 << 12)) != 0;
+		}
+
+#if 0
+		if(num_ex >= 0x80000001) {
+			__cpuid(result, 0x80000001);
+			caps.x64 = (result[3] & ((int)1 << 29)) != 0;
+			caps.sse4a = (result[2] & ((int)1 <<  6)) != 0;
+			caps.fma4 = (result[2] & ((int)1 << 16)) != 0;
+			caps.xop = (result[2] & ((int)1 << 11)) != 0;
+		}
+#endif
+
+		caps_init = true;
+	}
+
+	return caps;
+}
+
+bool system_cpu_support_sse2()
+{
+	CPUCapabilities& caps = system_cpu_capabilities();
+	return caps.sse && caps.sse2;
+}
+
+bool system_cpu_support_sse3()
+{
+	CPUCapabilities& caps = system_cpu_capabilities();
+	return caps.sse && caps.sse2 && caps.sse3 && caps.ssse3;
+}
+
+bool system_cpu_support_sse41()
+{
+	CPUCapabilities& caps = system_cpu_capabilities();
+	return caps.sse && caps.sse2 && caps.sse3 && caps.ssse3 && caps.sse41;
+}
+
+bool system_cpu_support_avx()
+{
+	CPUCapabilities& caps = system_cpu_capabilities();
+	return caps.sse && caps.sse2 && caps.sse3 && caps.ssse3 && caps.sse41 && caps.avx;
+}
+#else
+
+bool system_cpu_support_sse2()
+{
+	return false;
+}
+
+bool system_cpu_support_sse3()
+{
+	return false;
+}
+
+bool system_cpu_support_sse41()
+{
+	return false;
+}
+
+bool system_cpu_support_avx()
+{
+	return false;
+}
+
+#endif
 
 CCL_NAMESPACE_END
 

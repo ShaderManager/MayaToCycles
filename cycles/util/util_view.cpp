@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #include <stdio.h>
@@ -55,7 +53,7 @@ static void view_display_text(int x, int y, const char *text)
 
 	glRasterPos3f(x, y, 0);
 
-	for(c=text; *c != '\0'; c++)
+	for(c = text; *c != '\0'; c++)
 		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, *c);
 }
 
@@ -72,6 +70,36 @@ void view_display_info(const char *info)
 	glColor3f(0.5f, 0.5f, 0.5f);
 
 	view_display_text(10, 7 + V.height - height, info);
+
+	glColor3f(1.0f, 1.0f, 1.0f);
+}
+
+void view_display_help()
+{
+	const int w = V.width / 1.15;
+	const int h = V.height / 1.15;
+
+	const int x1 = (V.width - w) / 2;
+	const int x2 = x1 + w;
+
+	const int y1 = (V.height - h) / 2;
+	const int y2 = y1 + h;
+
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glColor4f(0.5f, 0.5f, 0.5f, 0.8f);
+	glRectf(x1, y1, x2, y2);
+	glDisable(GL_BLEND);
+
+	glColor3f(0.8f, 0.8f, 0.8f);
+
+	view_display_text(x1+20, y2-20, "Cycles Renderer");
+	view_display_text(x1+20, y2-40, "(C) 2011-2014 Blender Foundation");
+	view_display_text(x1+20, y2-80, "Help:");
+	view_display_text(x1+20, y2-100, "h:  Toggle this help message");
+	view_display_text(x1+20, y2-120, "r:  Restart the render");
+	view_display_text(x1+20, y2-140, "q:  Quit the program");
+	view_display_text(x1+20, y2-160, "esc:  Cancel the render");
 
 	glColor3f(1.0f, 1.0f, 1.0f);
 }
@@ -136,7 +164,7 @@ static void view_keyboard(unsigned char key, int x, int y)
 	}
 }
 
-void view_idle()
+static void view_idle(void)
 {
 	if(V.redraw) {
 		V.redraw = false;

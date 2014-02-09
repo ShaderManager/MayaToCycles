@@ -1,19 +1,17 @@
 /*
- * Copyright 2011, Blender Foundation.
+ * Copyright 2011-2013 Blender Foundation
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
  */
 
 #ifndef __OSL_GLOBALS_H__
@@ -22,20 +20,36 @@
 #ifdef WITH_OSL
 
 #include <OSL/oslexec.h>
+#include <cmath>
 
 #include "util_map.h"
 #include "util_param.h"
 #include "util_thread.h"
 #include "util_vector.h"
 
+#ifndef WIN32
+using std::isfinite;
+#endif
+
 CCL_NAMESPACE_BEGIN
 
+class OSLRenderServices;
+
 struct OSLGlobals {
-	/* use */
+	OSLGlobals()
+	{
+		ss = NULL;
+		ts = NULL;
+		services = NULL;
+		use = false;
+	}
+
 	bool use;
 
-	/* shading system */ 
+	/* shading system */
 	OSL::ShadingSystem *ss;
+	OSL::TextureSystem *ts;
+	OSLRenderServices *services;
 
 	/* shader states */
 	vector<OSL::ShadingAttribStateRef> surface_state;
@@ -56,14 +70,25 @@ struct OSLGlobals {
 
 	vector<AttributeMap> attribute_map;
 	ObjectNameMap object_name_map;
+	vector<ustring> object_names;
+};
 
-	/* thread key for thread specific data lookup */
-	struct ThreadData {
-		OSL::ShaderGlobals globals;
-		void *thread_info;
-	};
+/* trace() call result */
+struct OSLTraceData {
+	Ray ray;
+	Intersection isect;
+	ShaderData sd;
+	bool setup;
+	bool init;
+};
 
-	static tls_ptr(ThreadData, thread_data);
+/* thread key for thread specific data lookup */
+struct OSLThreadData {
+	OSL::ShaderGlobals globals;
+	OSL::PerThreadInfo *osl_thread_info;
+	OSLTraceData tracedata;
+	OSL::ShadingContext *context[SHADER_CONTEXT_NUM];
+	OIIO::TextureSystem::Perthread *oiio_thread_info;
 };
 
 CCL_NAMESPACE_END
