@@ -3,6 +3,8 @@
 #include <maya/MPxCommand.h>
 #include <maya/MSyntax.h>
 
+class MDagPath;
+
 namespace ccl
 {
 	class Session;
@@ -31,4 +33,7 @@ private:
 	unsigned int m_width, m_height;
 
 	void update_framebuffer();
+
+	void sync_camera(const MDagPath& camera_path);
+	void sync_meshes();
 };

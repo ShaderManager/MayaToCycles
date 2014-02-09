@@ -69,6 +69,22 @@ include_directories(
 	${OPENIMAGEIO_INCLUDES}
 	${OPENIMAGEIO_INCLUDES}/OpenImageIO)
 
+if(WITH_CYCLES_NETWORK)
+  add_definitions(-DWITH_NETWORK)
+endif()
+
+if(WITH_CYCLES_OSL)
+  add_definitions(-DWITH_OSL)
+endif()
+
+if(WITH_CYCLES_PARTIO)
+  add_definitions(-DWITH_PARTIO)
+endif()
+
+add_definitions(-DWITH_OPENCL)
+add_definitions(-DWITH_CUDA)
+add_definitions(-DWITH_MULTI)
+
 # Subdirectories
 add_subdirectory(cycles)
 add_subdirectory(mtoc)
